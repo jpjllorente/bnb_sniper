@@ -9,9 +9,10 @@ contract interactions are omitted in this skeleton implementation.
 from __future__ import annotations
 
 from models.token import Token
-from utils.logger import log_function, setup_logger
+from services.telegram_service import TelegramService
+from utils.log_config import log_function, logger_manager
 
-logger = setup_logger(__name__)
+logger = logger_manager.setup_logger(__name__)
 
 class AutosellService:
     """Manage the logic for selling tokens automatically."""

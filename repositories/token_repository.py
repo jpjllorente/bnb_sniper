@@ -13,7 +13,7 @@ from typing import List
 import sqlite3
 import os
 from models.token import Token
-from utils.logger import log_function
+from utils.log_config import log_function
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "../../memecoins.db")
 

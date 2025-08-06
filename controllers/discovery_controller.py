@@ -13,10 +13,9 @@ from models.token import Token
 from controllers.autobuy_controller import AutobuyController
 from services.discovery_service import DiscoveryService
 from repositories.token_repository import TokenRepository
-from utils.logger import setup_logger, log_function
+from utils.log_config import logger_manager, log_function
 
-
-logger = setup_logger(__name__)
+logger = logger_manager.setup_logger(__name__)
 
 
 class DiscoveryController:
