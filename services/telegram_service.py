@@ -8,20 +8,16 @@ messages and wait for user replies.
 
 from __future__ import annotations
 
+from models.token import Token
 from utils.logger import log_function
-
 
 class TelegramService:
     """Interact with the user via Telegram."""
 
     @log_function
-    def confirm_action(self, message: str) -> bool:
-        """Ask the user to confirm an action and return their response.
-
-        The current implementation always returns ``True`` to simulate
-        affirmative user input. In a full application this method would
-        send a message via the Telegram bot and block until a response is
-        received.
-        """
-        # TODO: send message via Telegram API and wait for reply
-        return True
+    def confirm_high_fee(self, token: Token, fee_percent: float) -> bool:
+        # TODO: conectar al bot real de Telegram
+        print(f"🚨 Alta comisión estimada para {token.symbol}: {fee_percent}%")
+        print("¿Deseas continuar con la compra? (S/N)")
+        respuesta = input().strip().lower()
+        return respuesta == "s"
