@@ -10,7 +10,7 @@ tasks while remaining decoupled from implementation details.
 from __future__ import annotations
 
 from models.token import Token
-from services.autobuy_service import AutobuyService
+from controllers.autobuy_controller import AutobuyController
 from services.discovery_service import DiscoveryService
 from repositories.token_repository import TokenRepository
 from utils.logger import setup_logger, log_function
@@ -24,11 +24,11 @@ class DiscoveryController:
     def __init__(
             self,
             discovery_service: DiscoveryService | None = None,
-            autobuy_service: AutobuyService | None = None,
+            autobuy_controller: AutobuyController | None = None,
             token_repository: TokenRepository | None = None
         ) -> None:
             self.discovery_service = discovery_service or DiscoveryService()
-            self.autobuy_service = autobuy_service or AutobuyService()
+            self.autobuy_controller = autobuy_controller or AutobuyController()
             self.token_repository = token_repository or TokenRepository()
 
     @log_function
@@ -42,4 +42,4 @@ class DiscoveryController:
         nuevos = self.buscar_pares_con_bnb()
         for token in nuevos:
             self.token_repository.save(token)
-            self.autobuy_service.buy_token(token)
+            self.autobuy_controller.procesar_token(token)
