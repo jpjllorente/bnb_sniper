@@ -12,6 +12,7 @@ from __future__ import annotations
 from models.token import Token
 from services.autobuy_service import AutobuyService
 from services.discovery_service import DiscoveryService
+from repositories.token_repository import TokenRepository
 from utils.logger import setup_logger, log_function
 
 
@@ -20,20 +21,25 @@ logger = setup_logger(__name__)
 
 class DiscoveryController:
     """Coordinate discovery and initial token processing."""
-
-    def __init__(self, discovery_service: DiscoveryService | None = None, autobuy_service: AutobuyService | None = None) -> None:
-        self.discovery_service = discovery_service or DiscoveryService()
-        self.autobuy_service = autobuy_service or AutobuyService()
+    def __init__(
+            self,
+            discovery_service: DiscoveryService | None = None,
+            autobuy_service: AutobuyService | None = None,
+            token_repository: TokenRepository | None = None
+        ) -> None:
+            self.discovery_service = discovery_service or DiscoveryService()
+            self.autobuy_service = autobuy_service or AutobuyService()
+            self.token_repository = token_repository or TokenRepository()
 
     @log_function
-    def buscar_pares_con_bnb(self) -> list[dict[str, str]]:
-        """Discover new token pairs with BNB liquidity."""
-        return self.discovery_service.discover_new_tokens()
+    def buscar_pares_con_bnb(self) -> list[Token]:
+        all_candidates = self.discovery_service.discover_new_tokens()
+        nuevos = [t for t in all_candidates if not self.token_repository.exists(t.pair_address)]
+        return nuevos
 
     @log_function
     def procesar_tokens_descubiertos(self) -> None:
-        """Process each discovered token and attempt to buy."""
-        candidates = self.buscar_pares_con_bnb()
-        for t in candidates:
-            token = Token(address=t.get("address", ""), name=t.get("name", ""))
+        nuevos = self.buscar_pares_con_bnb()
+        for token in nuevos:
+            self.token_repository.save(token)
             self.autobuy_service.buy_token(token)

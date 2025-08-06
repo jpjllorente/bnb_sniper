@@ -8,21 +8,21 @@ token pairs with BNB liquidity.
 
 from __future__ import annotations
 
-from typing import List, Dict, Any
+import requests
 
+from models.token import Token
 from utils.logger import log_function
 
 
 class DiscoveryService:
     """Find new token pairs that might be interesting to trade."""
+    DEXSCREENER_URL = "https://api.dexscreener.com/latest/dex/search?q=*/BNB"
 
     @log_function
-    def discover_new_tokens(self) -> List[Dict[str, Any]]:
-        """Return a list of new tokens discovered.
+    def discover_new_tokens(self) -> list[Token]:
+        response = requests.get(self.DEXSCREENER_URL, timeout=10)
+        response.raise_for_status()
 
-        Each token is represented as a dict with at least ``address`` and
-        ``name`` keys. In a full implementation this method would call
-        external APIs and filter out unsuitable candidates.
-        """
-        # TODO: integrate with real discovery sources
-        return []
+        data = response.json().get("pairs", [])
+        tokens = [Token.from_dexscreener(pair) for pair in data if pair.get("chainId") == "bsc"]
+        return tokens
