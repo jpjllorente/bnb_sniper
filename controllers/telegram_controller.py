@@ -1,6 +1,6 @@
 from repositories.action_repository import ActionRepository
 from models.token import Token
-from utils.logger import log_function
+from utils.log_config import log_function
 
 class TelegramController:
     def __init__(self, repository: ActionRepository | None = None) -> None:
