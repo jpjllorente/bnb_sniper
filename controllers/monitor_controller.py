@@ -14,7 +14,7 @@ from models.token import Token
 from models.trade_session import TradeSession
 from repositories.monitor_repository import MonitorRepository
 from services.autosell_service import AutosellService
-from utils.logger import log_function
+from utils.log_config import log_function
 
 
 class MonitorController:

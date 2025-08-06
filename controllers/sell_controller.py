@@ -10,9 +10,9 @@ from __future__ import annotations
 from models.token import Token
 from models.trade_session import TradeSession
 from services.telegram_service import TelegramService
-from utils.logger import log_function, setup_logger
+from utils.log_config import logger_manager, log_function
 
-logger = setup_logger(__name__)
+logger = logger_manager.setup_logger(__name__)
 
 class SellController:
     """Handle sell operations for tokens."""

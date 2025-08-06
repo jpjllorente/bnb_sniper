@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from models.token import Token
 from services.telegram_service import TelegramService
-from utils.logger import log_function
+from utils.log_config import log_function
 
 
 class AutosellService:
