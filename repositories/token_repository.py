@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import List
 
-from bsc_sniper.models.token import Token
+from models.token import Token
 
 
 class TokenRepository:

@@ -8,9 +8,9 @@ contract interactions are omitted in this skeleton implementation.
 
 from __future__ import annotations
 
-from bsc_sniper.models.token import Token
-from bsc_sniper.services.telegram_service import TelegramService
-from bsc_sniper.utils.logger import log_function
+from models.token import Token
+from services.telegram_service import TelegramService
+from utils.logger import log_function
 
 
 class AutosellService:

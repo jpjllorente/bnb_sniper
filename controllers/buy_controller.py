@@ -7,9 +7,9 @@ purchases of tokens through the ``AutobuyService``.
 
 from __future__ import annotations
 
-from bsc_sniper.models.token import Token
-from bsc_sniper.services.autobuy_service import AutobuyService
-from bsc_sniper.utils.logger import log_function
+from models.token import Token
+from services.autobuy_service import AutobuyService
+from utils.logger import log_function
 
 
 class BuyController:

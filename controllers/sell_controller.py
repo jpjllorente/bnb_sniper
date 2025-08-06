@@ -7,9 +7,9 @@ through the ``AutosellService``.
 
 from __future__ import annotations
 
-from bsc_sniper.models.token import Token
-from bsc_sniper.services.autosell_service import AutosellService
-from bsc_sniper.utils.logger import log_function
+from models.token import Token
+from services.autosell_service import AutosellService
+from utils.logger import log_function
 
 
 class SellController:

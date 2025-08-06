@@ -10,10 +10,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from bsc_sniper.models.token import Token
-from bsc_sniper.services.honeypot_service import HoneypotService
-from bsc_sniper.services.telegram_service import TelegramService
-from bsc_sniper.utils.logger import log_function
+from models.token import Token
+from services.honeypot_service import HoneypotService
+from services.telegram_service import TelegramService
+from utils.logger import log_function
 
 
 class AutobuyService:

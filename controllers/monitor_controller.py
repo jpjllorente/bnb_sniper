@@ -8,7 +8,7 @@ conditions are met. In this skeleton it provides a no‑op implementation.
 
 from __future__ import annotations
 
-from bsc_sniper.utils.logger import log_function
+from utils.logger import log_function
 
 
 class MonitorController:

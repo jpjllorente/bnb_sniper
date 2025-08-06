@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import List, Dict, Any
 
-from bsc_sniper.utils.logger import log_function
+from utils.logger import log_function
 
 
 class DiscoveryService:

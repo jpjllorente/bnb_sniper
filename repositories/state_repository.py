@@ -10,8 +10,8 @@ from __future__ import annotations
 
 from typing import Dict
 
-from bsc_sniper.models.token import Token
-from bsc_sniper.enums.token_status import TokenStatus
+from models.token import Token
+from enums.token_status import TokenStatus
 
 
 class StateRepository:

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from .token import Token
+from models.token import Token
 
 
 class TradeSession:

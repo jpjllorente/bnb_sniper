@@ -9,10 +9,10 @@ tasks while remaining decoupled from implementation details.
 
 from __future__ import annotations
 
-from bsc_sniper.models.token import Token
-from bsc_sniper.services.autobuy_service import AutobuyService
-from bsc_sniper.services.discovery_service import DiscoveryService
-from bsc_sniper.utils.logger import setup_logger, log_function
+from models.token import Token
+from services.autobuy_service import AutobuyService
+from services.discovery_service import DiscoveryService
+from utils.logger import setup_logger, log_function
 
 
 logger = setup_logger(__name__)

@@ -1,9 +1,7 @@
-"""
-Default configuration for bsc_sniper.
+## Default configuration for bsc_sniper.
 
-Modify these values to tune the behaviour of the bot. All values are
-examples and are not used by the current skeleton code.
-"""
+# Modify these values to tune the behaviour of the bot. All values are
+# examples and are not used by the current skeleton code.
 
 # Example configuration
 discovery:

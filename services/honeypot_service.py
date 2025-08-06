@@ -8,7 +8,7 @@ False for all tokens as a stub.
 
 from __future__ import annotations
 
-from bsc_sniper.utils.logger import log_function
+from utils.logger import log_function
 
 
 class HoneypotService:
