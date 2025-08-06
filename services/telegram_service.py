@@ -16,8 +16,7 @@ class TelegramService:
 
     @log_function
     def confirm_high_fee(self, token: Token, fee_percent: float) -> bool:
-        # TODO: conectar al bot real de Telegram
-        print(f"🚨 Alta comisión estimada para {token.symbol}: {fee_percent}%")
-        print("¿Deseas continuar con la compra? (S/N)")
+        print(f"⚠️ Alta comisión detectada para {token.symbol}: {fee_percent:.2f}%")
+        print("¿Deseas continuar con la compra? (S/N): ", end="")
         respuesta = input().strip().lower()
         return respuesta == "s"
