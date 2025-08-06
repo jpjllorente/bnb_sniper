@@ -20,3 +20,10 @@ class TelegramService:
         print("¿Deseas continuar con la compra? (S/N): ", end="")
         respuesta = input().strip().lower()
         return respuesta == "s"
+    
+    @log_function
+    def confirm_low_pnl(self, token: Token, pnl: float) -> bool:
+        print(f"⚠️ PnL estimado para {token.symbol} es bajo: {pnl:.2f}%")
+        print("¿Deseas continuar con la venta? (S/N): ", end="")
+        respuesta = input().strip().lower()
+        return respuesta == "s"
