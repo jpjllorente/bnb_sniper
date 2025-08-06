@@ -13,7 +13,7 @@ import time
 from models.token import Token
 from models.trade_session import TradeSession
 from repositories.monitor_repository import MonitorRepository
-from services.autosell_service import AutosellService
+from controllers.autosell_controller import AutosellController
 from utils.logger import log_function
 
 
@@ -23,6 +23,7 @@ class MonitorController:
     def __init__(self, dry_run: bool = True) -> None:
         self.dry_run = dry_run
         self.repo = MonitorRepository()
+        self.autosell_controller = AutosellController(dry_run=dry_run)
         self.active_threads: dict[str, threading.Thread] = {}
 
     @log_function
@@ -39,13 +40,8 @@ class MonitorController:
         self.active_threads[token.pair_address] = thread
         
     def _ejecutar_monitor(self, token: Token, session: TradeSession):
-        autosell = AutosellService(dry_run=self.dry_run)
         while True:
             time.sleep(15)
-
-            # Simula actualización del precio (aquí se usaría una API en real)
-            # token.price_native = consultar_nuevo_precio(token)
-
             self.repo.save_state(token, session)
-            autosell.sell_token(token, session)
-            break  # solo una iteración por ahora
+            self.autosell_controller.procesar_venta(token, session)
+            break
