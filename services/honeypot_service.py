@@ -11,9 +11,9 @@ from __future__ import annotations
 import requests
 
 from models.token import Token
-from utils.logger import log_function, setup_logger
+from utils.log_config import logger_manager, log_function
 
-logger = setup_logger(__name__)
+logger = logger_manager.setup_logger(__name__)
 
 class HoneypotService:
     GOPLUS_URL = "https://api.gopluslabs.io/api/v1/token_security/56"

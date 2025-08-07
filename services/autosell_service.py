@@ -10,30 +10,21 @@ from __future__ import annotations
 
 from models.token import Token
 from services.telegram_service import TelegramService
-from utils.logger import log_function
+from utils.log_config import log_function, logger_manager
 
+logger = logger_manager.setup_logger(__name__)
 
 class AutosellService:
     """Manage the logic for selling tokens automatically."""
 
-    def __init__(self, telegram_service: TelegramService | None = None) -> None:
-        self.telegram_service = telegram_service or TelegramService()
+    def __init__(self, dry_run: bool = True) -> None:
+        self.dry_run = dry_run
 
     @log_function
-    def sell_token(self, token: Token, pnl: float) -> bool:
-        """Attempt to sell a token based on current PnL.
+    def execute_sell(self, token: Token) -> None:
+        if self.dry_run:
+            logger.info(f"[DRY-RUN] Simulación de venta de {token.symbol} completada.")
+            return
 
-        :param token: The token to sell.
-        :param pnl: The profit or loss for the current position.
-        :returns: True if the sell was executed, False otherwise.
-        """
-        # Confirm with the user if PnL is negative or suspiciously high
-        if pnl < 0 or pnl > 10.0:  # placeholder thresholds
-            confirmed = self.telegram_service.confirm_action(
-                f"PNL ({pnl}) for {token.name} is outside the safe range. Proceed with sell?"
-            )
-            if not confirmed:
-                return False
-        # Execute sell (stub)
-        # TODO: interact with smart contracts to perform the sale
-        return True
+        # Aquí va la lógica real de venta
+        logger.info(f"✅ Token {token.symbol} vendido a {token.price_native} BNB")

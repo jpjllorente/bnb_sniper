@@ -9,9 +9,9 @@ placeholder and does not interact with smart contracts.
 from __future__ import annotations
 
 from models.token import Token
-from utils.logger import log_function, setup_logger
+from utils.log_config import logger_manager, log_function
 
-logger = setup_logger(__name__)
+logger = logger_manager.setup_logger(__name__)
 
 FEE_THRESHOLD_PERCENT = 10  # porcentaje máximo de fee aceptable
 

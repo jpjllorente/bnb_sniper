@@ -12,57 +12,76 @@ from __future__ import annotations
 
 import logging
 import os
-from functools import wraps
-from logging.handlers import TimedRotatingFileHandler
-from typing import Callable, Any
+from datetime import datetime
+from services.telegram_service import TelegramService
+
+LOG_DIR = os.path.join(os.path.dirname(__file__), "../../logs")
+os.makedirs(LOG_DIR, exist_ok=True)
+
+LOG_TELEGRAM_ERRORS = os.getenv("LOG_TELEGRAM_ERRORS", "False") == "True"
+telegram_service = TelegramService() if LOG_TELEGRAM_ERRORS else None
 
 
-def setup_logger(name: str, log_file: str | None = None, level: int = logging.DEBUG) -> logging.Logger:
-    """Configure and return a named logger.
+class TelegramErrorHandler(logging.Handler):
+    def __init__(self, telegram_service: TelegramService):
+        super().__init__(level=logging.ERROR)
+        self.telegram_service = telegram_service
 
-    :param name: Name of the logger (typically ``__name__``).
-    :param log_file: Optional override for the log file name. If not provided,
-        defaults to ``bsc_sniper.log``.
-    :param level: Logging level; defaults to ``logging.DEBUG`` for verbose
-        output. In production this could be raised to ``INFO`` or ``WARNING``.
-    :returns: A configured ``logging.Logger`` instance.
-    """
-    # Determine the logs directory relative to this file: ``.../bsc_sniper/utils/logger.py``
-    base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.pardir))
-    logs_dir = os.path.join(base_dir, "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    # Use the provided filename or default
-    log_filename = log_file or "bsc_sniper.log"
-    log_path = os.path.join(logs_dir, log_filename)
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            mensaje = f"🛑 *Error crítico*\n\n`{timestamp}`\n{msg}"
+            self.telegram_service.notificar_error(mensaje)
+        except Exception:
+            pass  # No debe romper el sistema
 
-    logger = logging.getLogger(name)
-    logger.setLevel(level)
-    # Avoid adding multiple handlers in case of repeated setup calls
-    if not logger.handlers:
-        handler = TimedRotatingFileHandler(log_path, when="midnight", backupCount=7)
-        formatter = logging.Formatter(
-            "% (asctime)s - %(name)s - %(levelname)s - %(message)s",
-            datefmt="%Y-%m-%d %H:%M:%S",
-        )
-        handler.setFormatter(formatter)
-        logger.addHandler(handler)
-    return logger
+class LoggerManager:
+    def __init__(self, log_level=logging.DEBUG, enable_telegram: bool = False):
+        self.log_level = log_level
+        self.enable_telegram = enable_telegram
+        self.telegram_service = TelegramService() if enable_telegram else None
+        self._loggers = {}
 
+    def setup_logger(self, name: str) -> logging.Logger:
+        if name in self._loggers:
+            return self._loggers[name]
 
-def log_function(func: Callable[..., Any]) -> Callable[..., Any]:
-    """Decorator that logs entry to and exit from a function.
+        logger = logging.getLogger(name)
+        logger.setLevel(self.log_level)
 
-    The decorated function will log its arguments on entry and its return
-    value on exit. This is particularly useful when debugging or tracing the
-    behaviour of services and controllers.
-    """
+        if not logger.handlers:
+            # File handler
+            file_handler = logging.FileHandler(f"{LOG_DIR}/{name.replace('.', '_')}.log")
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            logger.addHandler(file_handler)
 
-    @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        logger = logging.getLogger(func.__module__)
-        logger.debug("Entering %s with args=%s kwargs=%s", func.__name__, args, kwargs)
-        result = func(*args, **kwargs)
-        logger.debug("Exiting %s with result=%s", func.__name__, result)
-        return result
+            # Console handler
+            stream_handler = logging.StreamHandler()
+            stream_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+            logger.addHandler(stream_handler)
 
-    return wrapper
+            # Telegram handler
+            if self.enable_telegram and self.telegram_service:
+                tg_handler = TelegramErrorHandler(self.telegram_service)
+                tg_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+                logger.addHandler(tg_handler)
+
+        self._loggers[name] = logger
+        return logger
+
+    def log_function(self, func):
+        """
+        Decorador para registrar entrada y salida de funciones.
+        """
+        def wrapper(*args, **kwargs):
+            logger = self.setup_logger(func.__module__)
+            logger.debug(f"→ {func.__name__}() args={args} kwargs={kwargs}")
+            try:
+                result = func(*args, **kwargs)
+                logger.debug(f"← {func.__name__}() result={result}")
+                return result
+            except Exception as e:
+                logger.exception(f"🔥 Excepción en {func.__name__}: {e}")
+                raise
+        return wrapper
