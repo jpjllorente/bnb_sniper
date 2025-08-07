@@ -16,6 +16,7 @@ class TokenStatus(str, Enum):
 
     CANDIDATE = "candidate"
     EXCLUDED = "excluded"
+    FEE_EXCEEDED = "fee_exceeded"
     FOLLOWING = "following"
     NO_LIQUIDITY = "no_liquidity"
     SOLD = "sold"

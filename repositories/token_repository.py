@@ -32,11 +32,13 @@ class TokenRepository:
             pair_address TEXT PRIMARY KEY,
             name TEXT,
             symbol TEXT,
+            address TEXT,
             price_native REAL,
             price_usd REAL,
             pair_created_at INTEGER,
             image_url TEXT,
-            open_graph TEXT
+            open_graph TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
         conn.commit()
         conn.close()
@@ -54,12 +56,13 @@ class TokenRepository:
     def save(self, token: Token) -> None:
         conn = self._connect()
         conn.execute('''INSERT OR REPLACE INTO discovered_tokens 
-            (pair_address, name, symbol, price_native, price_usd, pair_created_at, image_url, open_graph)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (pair_address, name, symbol, address, price_native, price_usd, pair_created_at, image_url, open_graph, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''',
             (
                 token.pair_address,
                 token.name,
                 token.symbol,
+                token.address,
                 token.price_native,
                 token.price_usd,
                 token.pair_created_at,
