@@ -28,6 +28,7 @@ class Token(BaseModel):
     open_graph: str
     buy_tax: float = 0.0
     sell_tax: float = 0.0
+    transfer_tax: float = 0.0
     status: str = ""  # Default status
     timestamp: int = int(time.time())
 

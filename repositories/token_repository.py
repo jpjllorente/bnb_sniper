@@ -44,6 +44,7 @@ class TokenRepository:
             open_graph TEXT,
             buy_tax REAL DEFAULT 0.0,
             sell_tax REAL DEFAULT 0.0,
+            transfer_tax REAL DEFAULT 0.0,
             status TEXT DEFAULT '',
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
@@ -98,10 +99,12 @@ class TokenRepository:
         conn.execute('''UPDATE discovered_tokens SET
             buy_tax = ?,
             sell_tax = ?
+            transfer_tax = ?
             WHERE pair_address = ?''',
             (
                 token.buy_tax,
                 token.sell_tax,
+                token.transfer_tax,
                 token.pair_address
             )
         )
