@@ -8,7 +8,7 @@ purchases of tokens through the ``AutobuyService``.
 from __future__ import annotations
 
 from models.token import Token
-from services.honeypot_service import HoneypotService
+from services.goplus_service import GoplusService
 from services.telegram_service import TelegramService
 from services.autobuy_service import AutobuyService
 from repositories.token_repository import TokenRepository
@@ -27,12 +27,12 @@ class AutobuyController:
     def __init__(
         self,
         dry_run: bool = True,
-        honeypot_service: HoneypotService | None = None,
+        goplus_service: GoplusService | None = None,
         telegram_service: TelegramService | None = None,
         autobuy_service: AutobuyService | None = None
     ) -> None:
         self.dry_run = dry_run
-        self.honeypot_service = honeypot_service or HoneypotService()
+        self.honeypot_service = goplus_service or GoplusService()
         self.telegram_service = telegram_service or TelegramService()
         self.autobuy_service = autobuy_service or AutobuyService(dry_run=dry_run)
         
@@ -49,7 +49,7 @@ class AutobuyController:
     def _evaluar_token(self, token: Token) -> bool:
         status: TokenStatus = TokenStatus.DISCOVERED
         """Evaluate if the token meets criteria for purchase."""
-        if self.honeypot_service.is_honeypot(token):
+        if self.honeypot_service.update_token_and_get_honeypot(token):
             status = TokenStatus.HONEYPOT
             TokenRepository.update_status(token, status)
             logger.warning(f"❌ {token.symbol} identificado como honeypot. Se descarta.")
