@@ -14,6 +14,7 @@ import sqlite3
 import os
 from models.token import Token
 from utils.log_config import log_function
+from enums.token_status import TokenStatus
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "../../memecoins.db")
 
@@ -36,8 +37,14 @@ class TokenRepository:
             price_native REAL,
             price_usd REAL,
             pair_created_at INTEGER,
+            liquidity REAL,
+            volume REAL,
+            buys INTEGER,
             image_url TEXT,
             open_graph TEXT,
+            buy_tax REAL DEFAULT 0.0,
+            sell_tax REAL DEFAULT 0.0,
+            status TEXT DEFAULT '',
             timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
         conn.commit()
@@ -68,6 +75,34 @@ class TokenRepository:
                 token.pair_created_at,
                 token.image_url,
                 token.open_graph
+            )
+        )
+        conn.commit()
+        conn.close()
+        
+    @log_function
+    def update_status(self, token: Token, status: TokenStatus) -> None:
+        conn = self._connect()
+        conn.execute('''UPDATE discovered_tokens SET
+            status = ? WHERE pair_address = ?''',
+            (
+                status.value,
+                token.pair_address
+            )
+        )
+        conn.commit()
+        conn.close()
+        
+    def update_taxes(self, token: Token) -> None:
+        conn = self._connect()
+        conn.execute('''UPDATE discovered_tokens SET
+            buy_tax = ?,
+            sell_tax = ?
+            WHERE pair_address = ?''',
+            (
+                token.buy_tax,
+                token.sell_tax,
+                token.pair_address
             )
         )
         conn.commit()

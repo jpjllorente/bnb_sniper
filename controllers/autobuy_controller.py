@@ -11,7 +11,10 @@ from models.token import Token
 from services.honeypot_service import HoneypotService
 from services.telegram_service import TelegramService
 from services.autobuy_service import AutobuyService
+from repositories.token_repository import TokenRepository
 from utils.log_config import logger_manager, log_function
+
+from enums.token_status import TokenStatus
 
 logger = logger_manager.setup_logger(__name__)
 
@@ -37,20 +40,24 @@ class AutobuyController:
     def procesar_token(self, token: Token) -> None:
         logger.info(f"🧪 Analizando {token.symbol} para posible compra...")
 
-        if self.honeypot_service.is_honeypot(token):
-            logger.warning(f"❌ {token.symbol} identificado como honeypot. Se descarta.")
+        if not self._evaluar_token(token):
+            logger.info(f"❌ {token.symbol} no cumple criterios de compra. Se descarta.")
             return
-
-        estimated_fee_percent = self._estimar_fees(token)
-        logger.info(f"🔍 Fees estimados: {estimated_fee_percent:.2f}%")
-
-        if estimated_fee_percent > FEE_THRESHOLD_PERCENT:
-            confirmed = self.telegram_service.confirm_high_fee(token, estimated_fee_percent)
-            if not confirmed:
-                logger.info("❌ Usuario canceló la compra.")
-                return
 
         self.autobuy_service.execute_buy(token)
 
-    def _estimar_fees(self, token: Token) -> float:
-        return 12.5 if "rug" in token.name.lower() else 4.0
+    def _evaluar_token(self, token: Token) -> bool:
+        status: TokenStatus = TokenStatus.DISCOVERED
+        """Evaluate if the token meets criteria for purchase."""
+        if self.honeypot_service.is_honeypot(token):
+            status = TokenStatus.HONEYPOT
+            TokenRepository.update_status(token, status)
+            logger.warning(f"❌ {token.symbol} identificado como honeypot. Se descarta.")
+            return False
+        if token.liquidity < 2000 and token.volume < 1000 and token.buys < 2:
+            status = TokenStatus.EXCLUDED
+            TokenRepository.update_status(token, status)
+            return False
+        status = TokenStatus.CANDIDATE
+        TokenRepository.update_status(token, status)
+        return True
