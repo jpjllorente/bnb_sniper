@@ -81,17 +81,31 @@ class Web3Controller:
         return coste_total
 
     @log_function
+    def calcular_pnl_porcentual(self, coste_unitario: float, precio_actual: float) -> float:
+        if precio_actual == 0:
+            logger.error("Precio actual es 0, no se puede calcular PnL")
+            return -100.0
+        pnl = ((coste_unitario - precio_actual) / precio_actual) * 100
+        logger.info(f"PnL estimado: {pnl:.2f}%")
+        return pnl
+
+    @log_function
     def validar_rentabilidad(
         self,
         coste_unitario: float,
         precio_actual: float,
         token_obj,
-        contexto: str
+        contexto: str,
+        umbral_pnl_negativo: float
     ) -> bool:
-        margen_requerido = float(os.getenv("UMBRAL_RENTA_BNB", "0.000001"))
+        """
+        Retorna True si la rentabilidad es aceptable.
+        Si el PnL es demasiado negativo (porcentaje), pausa y notifica al usuario.
+        """
+        pnl = self.calcular_pnl_porcentual(coste_unitario, precio_actual)
 
-        if precio_actual < (coste_unitario + margen_requerido):
-            logger.warning("❌ Coste demasiado alto. Pausando.")
+        if pnl < -abs(umbral_pnl_negativo):
+            logger.warning(f"❌ Rentabilidad insuficiente (PnL={pnl:.2f}%). Acción pausada.")
             self.telegram.solicitar_accion("compra", token_obj, contexto)
             return False
 
