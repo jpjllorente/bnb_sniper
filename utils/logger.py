@@ -14,17 +14,14 @@ import logging, os
 from logging.handlers import RotatingFileHandler
 from datetime import datetime
 from typing import Optional
+from services.telegram_service import TelegramService
 
 LOG_DIR = os.getenv("LOG_DIR", "./logs")
 
-class TelegramStub:
-    def notificar_error(self, mensaje: str) -> None:
-        pass
-
 class TelegramErrorHandler(logging.Handler):
-    def __init__(self, telegram_service: Optional[TelegramStub] = None):
+    def __init__(self, telegram_service: TelegramService):
         super().__init__(level=logging.ERROR)
-        self.telegram_service = telegram_service or TelegramStub()
+        self.telegram_service = telegram_service or TelegramService()
     def emit(self, record):
         try:
             msg = self.format(record)
