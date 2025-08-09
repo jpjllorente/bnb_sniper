@@ -1,9 +1,9 @@
+# repositories/action_repository.py (añadidos opcionales)
 import sqlite3
 import os
 from utils.log_config import log_function
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "../../memecoins.db")
-
 
 class ActionRepository:
     def __init__(self, db_path: str = DB_PATH):
@@ -59,8 +59,21 @@ class ActionRepository:
     def obtener_estado(self, pair_address: str) -> str | None:
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute('''
-                SELECT estado FROM acciones WHERE pair_address = ?
-            ''', (pair_address,))
+            cur.execute('SELECT estado FROM acciones WHERE pair_address = ?', (pair_address,))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    # opcionales
+    @log_function
+    def limpiar(self, pair_address: str):
+        with self._connect() as conn:
+            conn.execute('DELETE FROM acciones WHERE pair_address = ?', (pair_address,))
+            conn.commit()
+
+    @log_function
+    def obtener_tipo(self, pair_address: str) -> str | None:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute('SELECT tipo FROM acciones WHERE pair_address = ?', (pair_address,))
             row = cur.fetchone()
             return row[0] if row else None
