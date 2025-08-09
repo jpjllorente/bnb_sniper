@@ -26,6 +26,3 @@ class AutobuyService:
         if self.dry_run:
             logger.info(f"[DRY-RUN] Simulación de compra de {token.symbol}.")
             return
-
-        # Aquí va la ejecución real (por ahora, simulada también)
-        logger.info(f"✅ Token {token.symbol} comprado a {token.price_native} BNB")
