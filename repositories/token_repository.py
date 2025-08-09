@@ -14,6 +14,7 @@ import sqlite3
 import os
 from models.token import Token
 from utils.log_config import log_function
+from enums.token_status import TokenStatus
 
 DB_PATH = os.path.join(os.path.dirname(__file__), "../../memecoins.db")
 
@@ -32,11 +33,20 @@ class TokenRepository:
             pair_address TEXT PRIMARY KEY,
             name TEXT,
             symbol TEXT,
+            address TEXT,
             price_native REAL,
             price_usd REAL,
             pair_created_at INTEGER,
+            liquidity REAL,
+            volume REAL,
+            buys INTEGER,
             image_url TEXT,
-            open_graph TEXT
+            open_graph TEXT,
+            buy_tax REAL DEFAULT 0.0,
+            sell_tax REAL DEFAULT 0.0,
+            transfer_tax REAL DEFAULT 0.0,
+            status TEXT DEFAULT '',
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
         conn.commit()
         conn.close()
@@ -54,17 +64,48 @@ class TokenRepository:
     def save(self, token: Token) -> None:
         conn = self._connect()
         conn.execute('''INSERT OR REPLACE INTO discovered_tokens 
-            (pair_address, name, symbol, price_native, price_usd, pair_created_at, image_url, open_graph)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)''',
+            (pair_address, name, symbol, address, price_native, price_usd, pair_created_at, image_url, open_graph, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''',
             (
                 token.pair_address,
                 token.name,
                 token.symbol,
+                token.address,
                 token.price_native,
                 token.price_usd,
                 token.pair_created_at,
                 token.image_url,
                 token.open_graph
+            )
+        )
+        conn.commit()
+        conn.close()
+        
+    @log_function
+    def update_status(self, token: Token, status: TokenStatus) -> None:
+        conn = self._connect()
+        conn.execute('''UPDATE discovered_tokens SET
+            status = ? WHERE pair_address = ?''',
+            (
+                status.value,
+                token.pair_address
+            )
+        )
+        conn.commit()
+        conn.close()
+        
+    def update_taxes(self, token: Token) -> None:
+        conn = self._connect()
+        conn.execute('''UPDATE discovered_tokens SET
+            buy_tax = ?,
+            sell_tax = ?
+            transfer_tax = ?
+            WHERE pair_address = ?''',
+            (
+                token.buy_tax,
+                token.sell_tax,
+                token.transfer_tax,
+                token.pair_address
             )
         )
         conn.commit()
