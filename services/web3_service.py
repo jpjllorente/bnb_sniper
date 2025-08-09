@@ -112,3 +112,63 @@ class Web3Service:
     @log_function
     def get_last_block_timestamp(self) -> int:
         return int(self._w3.eth.get_block('latest')['timestamp'])
+
+    # --- allowance / approve ---
+    def allowance(self, token_address: str, owner: str, spender: str) -> int:
+        erc20 = self.load_erc20(token_address)
+        return int(erc20.functions.allowance(self.checksum(owner), self.checksum(spender)).call())
+
+    def build_approve(self, token_address: str, spender: str, amount_wei: int) -> dict:
+        if not self._account:
+            raise RuntimeError("No hay PRIVATE_KEY configurada para firmar.")
+        erc20 = self.load_erc20(token_address)
+        tx = erc20.functions.approve(self.checksum(spender), int(amount_wei)).build_transaction({
+            "from": self._account.address,
+            "nonce": self._w3.eth.get_transaction_count(self._account.address),
+            "chainId": self._w3.eth.chain_id,
+        })
+        gas_price = self._legacy_gas_price()
+        if gas_price:
+            tx["gasPrice"] = gas_price
+        estimated_gas = self._w3.eth.estimate_gas(tx)
+        tx["gas"] = int(estimated_gas * 1.20)
+        return tx
+
+    # --- swapExactTokensForETH (token -> BNB) ---
+    def build_swap_exact_tokens_for_eth(
+        self,
+        token_address: str,
+        amount_in_tokens_raw: int,    # cantidad en unidades "raw" del token (según decimals)
+        amount_out_min_bnb_wei: int,
+        deadline_secs_from_now: int = 60
+    ) -> dict:
+        from time import time
+        if not self._account:
+            raise RuntimeError("No hay PRIVATE_KEY configurada para firmar.")
+        router = self.load_router()
+        path = [self.checksum(token_address), self._wbnb_addr]
+        tx = router.functions.swapExactTokensForETH(
+            int(amount_in_tokens_raw),
+            int(amount_out_min_bnb_wei),
+            path,
+            self._account.address,
+            int(time()) + deadline_secs_from_now,
+        ).build_transaction({
+            "from": self._account.address,
+            "nonce": self._w3.eth.get_transaction_count(self._account.address),
+            "chainId": self._w3.eth.chain_id,
+        })
+        gas_price = self._legacy_gas_price()
+        if gas_price:
+            tx["gasPrice"] = gas_price
+        estimated_gas = self._w3.eth.estimate_gas(tx)
+        tx["gas"] = int(estimated_gas * 1.20)
+        return tx
+
+    # --- helper para amountOutMin token->BNB ---
+    def get_amount_out_min_token_to_bnb(self, token_address: str, amount_in_tokens_raw: int, slippage_percent: float | None) -> int:
+        slippage = DEFAULT_SLIPPAGE if slippage_percent is None else slippage_percent
+        path = [self.checksum(token_address), self._wbnb_addr]
+        amounts = self.get_amounts_out(amount_in_wei=amount_in_tokens_raw, path=path)  # reutiliza get_amounts_out
+        amt_out = amounts[-1]
+        return int(amt_out * (1 - (slippage / 100.0)))
