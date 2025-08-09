@@ -1,11 +1,9 @@
-from utils.logger import LoggerManager
+from utils.logger import logger_manager, log_function
+
 import os
 
 # Activar Telegram si está definido en entorno
 ENABLE_TELEGRAM = os.getenv("LOG_TELEGRAM_ERRORS", "False").lower() == "true"
-
-# Instancia global del sistema de logs
-logger_manager = LoggerManager(enable_telegram=ENABLE_TELEGRAM)
 
 # Decorador para logging de funciones
 log_function = logger_manager.log_function

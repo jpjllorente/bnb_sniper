@@ -10,78 +10,66 @@ directory one level above the package root with a filename of
 
 from __future__ import annotations
 
-import logging
-import os
+import logging, os
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
-from services.telegram_service import TelegramService
+from typing import Optional
 
-LOG_DIR = os.path.join(os.path.dirname(__file__), "../../logs")
-os.makedirs(LOG_DIR, exist_ok=True)
+LOG_DIR = os.getenv("LOG_DIR", "./logs")
 
-LOG_TELEGRAM_ERRORS = os.getenv("LOG_TELEGRAM_ERRORS", "False") == "True"
-telegram_service = TelegramService() if LOG_TELEGRAM_ERRORS else None
-
+class TelegramStub:
+    def notificar_error(self, mensaje: str) -> None:
+        pass
 
 class TelegramErrorHandler(logging.Handler):
-    def __init__(self, telegram_service: TelegramService):
+    def __init__(self, telegram_service: Optional[TelegramStub] = None):
         super().__init__(level=logging.ERROR)
-        self.telegram_service = telegram_service
-
+        self.telegram_service = telegram_service or TelegramStub()
     def emit(self, record):
         try:
             msg = self.format(record)
             timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            mensaje = f"🛑 *Error crítico*\n\n`{timestamp}`\n{msg}"
-            self.telegram_service.notificar_error(mensaje)
+            self.telegram_service.notificar_error(f"🛑 *Error crítico*\n\n`{timestamp}`\n{msg}")
         except Exception:
-            pass  # No debe romper el sistema
+            pass
 
 class LoggerManager:
-    def __init__(self, log_level=logging.DEBUG, enable_telegram: bool = False):
-        self.log_level = log_level
+    def __init__(self, enable_telegram: bool = False):
         self.enable_telegram = enable_telegram
-        self.telegram_service = TelegramService() if enable_telegram else None
         self._loggers = {}
+        os.makedirs(LOG_DIR, exist_ok=True)
 
     def setup_logger(self, name: str) -> logging.Logger:
         if name in self._loggers:
             return self._loggers[name]
-
         logger = logging.getLogger(name)
-        logger.setLevel(self.log_level)
-
+        logger.setLevel(logging.DEBUG)
         if not logger.handlers:
-            # File handler
-            file_handler = logging.FileHandler(f"{LOG_DIR}/{name.replace('.', '_')}.log")
-            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(file_handler)
-
-            # Console handler
-            stream_handler = logging.StreamHandler()
-            stream_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
-            logger.addHandler(stream_handler)
-
-            # Telegram handler
-            if self.enable_telegram and self.telegram_service:
-                tg_handler = TelegramErrorHandler(self.telegram_service)
-                tg_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
-                logger.addHandler(tg_handler)
-
+            fh = RotatingFileHandler(os.path.join(LOG_DIR, f"{name.replace('.', '_')}.log"),
+                                     maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+            fh.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+            ch = logging.StreamHandler()
+            ch.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
+            logger.addHandler(fh)
+            logger.addHandler(ch)
+            if self.enable_telegram:
+                logger.addHandler(TelegramErrorHandler())
+            logger.propagate = False
         self._loggers[name] = logger
         return logger
 
     def log_function(self, func):
-        """
-        Decorador para registrar entrada y salida de funciones.
-        """
         def wrapper(*args, **kwargs):
             logger = self.setup_logger(func.__module__)
-            logger.debug(f"→ {func.__name__}() args={args} kwargs={kwargs}")
+            logger.debug(f"→ {func.__name__} args={args} kwargs={kwargs}")
             try:
                 result = func(*args, **kwargs)
-                logger.debug(f"← {func.__name__}() result={result}")
+                logger.debug(f"← {func.__name__} result={result}")
                 return result
             except Exception as e:
                 logger.exception(f"🔥 Excepción en {func.__name__}: {e}")
                 raise
         return wrapper
+
+logger_manager = LoggerManager(enable_telegram=False)
+log_function = logger_manager.log_function
