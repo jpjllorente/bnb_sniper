@@ -110,3 +110,69 @@ class AutoSellController:
 
         self.monitor_repo.clear_history_id(pair_address)
         return {"ok": True, "history_id": history_id, "pnl": pnl_percent, "bnb_amount": bnb_amount}
+
+    @log_function
+    def send_and_record_sell(self,
+                            pair_address: str,
+                            token_address: str,
+                            sell_amount_tokens: float,
+                            sell_tx: dict) -> dict:
+        """
+        Envía la tx de venta, espera receipt y registra en history los valores reales.
+        Calcula BNB recibido por delta de balance (pre/post) y compone el precio real unitario.
+        """
+        # 1) balance antes
+        pre_wei = self.w3s.wei_balance()
+
+        # 2) enviar
+        tx_hash = self.w3s.sign_and_send(sell_tx)
+
+        # 3) esperar receipt y datos de gas
+        receipt = self.w3s.wait_for_receipt(tx_hash)
+        tx = self.w3s.get_transaction(tx_hash)
+        gas_used = int(receipt["gasUsed"])
+        gas_price = int(tx.get("gasPrice") or 0)
+        gas_cost_wei = gas_used * gas_price
+
+        # 4) balance después
+        post_wei = self.w3s.wei_balance()
+
+        # 5) delta neto y bruto recibido
+        delta_net_wei = post_wei - pre_wei   # incluye el gas restado
+        bnb_net = self.w3s.wei_to_bnb(delta_net_wei)
+        bnb_gas = self.w3s.wei_to_bnb(gas_cost_wei)
+        bnb_bruto_recibido = bnb_net + bnb_gas  # simétrico a compra (incluye gas en el “total”)
+
+        sell_real_price_bnb = bnb_bruto_recibido / max(sell_amount_tokens, 1e-18)
+
+        # 6) recuperar buy_real_price y cerrar ciclo con pnl & bnb_amount
+        history_id = self.monitor_repo.get_history_id(pair_address)
+        if not history_id:
+            return {"ok": False, "reason": "history_id no encontrado en monitor"}
+        h = self.history_repo.get_by_id(history_id)
+        if not h or h.get("buy_real_price") is None:
+            return {"ok": False, "reason": "Compra real no registrada"}
+
+        buy_real_price_bnb = float(h["buy_real_price"])
+        pnl_percent = ((sell_real_price_bnb - buy_real_price_bnb) / max(buy_real_price_bnb, 1e-18)) * sell_amount_tokens * 100.0
+        bnb_amount = (sell_real_price_bnb - buy_real_price_bnb) * sell_amount_tokens
+
+        self.history_repo.finalize_sell(
+            history_id=history_id,
+            sell_entry_price=sell_real_price_bnb,        # o el entry al iniciar venta si lo guardas por separado
+            sell_price_with_fees=sell_real_price_bnb,    # si estimas fees aparte, pásalas; aquí usamos real
+            sell_real_price=sell_real_price_bnb,
+            sell_amount=sell_amount_tokens,
+            pnl=pnl_percent,
+            bnb_amount=bnb_amount
+        )
+        self.monitor_repo.clear_history_id(pair_address)
+
+        return {
+            "ok": True,
+            "history_id": history_id,
+            "tx_hash": tx_hash,
+            "sell_real_price_bnb": sell_real_price_bnb,
+            "bnb_amount": bnb_amount,
+            "gas_used": gas_used
+        }
