@@ -137,12 +137,10 @@ class MonitorOrchestrator:
             # 'pendiente' -> no hacemos nada
 
     def _list_action_pairs_safe(self) -> list[str]:
-        """
-        Método auxiliar: si no tienes listado de acciones en tu repo,
-        puedes mantener un registro en memoria o añadir un método en ActionRepository.
-        Aquí lo dejo como punto de extensión; devuelvo lista vacía por defecto.
-        """
-        return []
+        try:
+            return self.action_repo.list_pairs()  # o list_pairs('pendiente') si quieres filtrar
+        except Exception:
+            return []
 
     # ---------- Transiciones ----------
     def _handle_authorized(self, pair_address: str) -> None:
