@@ -1,28 +1,17 @@
-"""
-Service responsible for discovering new trading opportunities.
-
-In this skeleton implementation the discovery simply returns an empty list.
-Extend this service to query Dexscreener or other APIs to discover new
-token pairs with BNB liquidity.
-"""
-
+# services/discovery_service.py
 from __future__ import annotations
-
 import requests
-
 from models.token import Token
 from utils.log_config import log_function
 
-
 class DiscoveryService:
-    """Find new token pairs that might be interesting to trade."""
+    # Usa comodín para capturar pares con BNB/WBNB como referencia
     DEXSCREENER_URL = "https://api.dexscreener.com/latest/dex/search?q=*/BNB"
 
     @log_function
     def discover_new_tokens(self) -> list[Token]:
-        response = requests.get(self.DEXSCREENER_URL, timeout=10)
-        response.raise_for_status()
-
-        data = response.json().get("pairs", [])
-        tokens = [Token.from_dexscreener(pair) for pair in data if pair.get("chainId") == "bsc"]
-        return tokens
+        r = requests.get(self.DEXSCREENER_URL, timeout=10)
+        r.raise_for_status()
+        pairs = r.json().get("pairs", []) or []
+        # Filtramos a BSC; si ya lo haces fuera, puedes quitar esta línea.
+        return [Token.from_dexscreener(p) for p in pairs if p.get("chainId") == "bsc"]
