@@ -15,7 +15,10 @@ class TokenStatus(str, Enum):
     """Possible states for a token in the system."""
 
     CANDIDATE = "candidate"
+    DISCOVERED = "discovered"
     EXCLUDED = "excluded"
+    FEE_EXCEEDED = "fee_exceeded"
     FOLLOWING = "following"
+    HONEYPOT = "honeypot"
     NO_LIQUIDITY = "no_liquidity"
     SOLD = "sold"

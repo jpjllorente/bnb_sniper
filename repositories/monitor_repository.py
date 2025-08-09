@@ -22,6 +22,7 @@ class MonitorRepository:
                     symbol TEXT,
                     price REAL,
                     entry_price REAL,
+                    buy_price_with_fees REAL,
                     pnl REAL,
                     updated_at INTEGER
                 )
@@ -29,17 +30,18 @@ class MonitorRepository:
             conn.commit()
 
     def save_state(self, token: Token, session: TradeSession):
-        pnl = ((token.price_native - session.entry_price) / session.entry_price) * 100
+        pnl = ((token.price_native - session.buy_price_with_fees) / session.buy_price_with_fees) * 100
         with self._connect() as conn:
             conn.execute('''
                 INSERT OR REPLACE INTO monitor_state (
-                    pair_address, symbol, price, entry_price, pnl, updated_at
-                ) VALUES (?, ?, ?, ?, ?, strftime('%s', 'now'))
+                    pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
             ''', (
                 token.pair_address,
                 token.symbol,
                 token.price_native,
                 session.entry_price,
+                token.buy_price_with_fees,
                 pnl
             ))
             conn.commit()
