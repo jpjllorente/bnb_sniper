@@ -1,3 +1,4 @@
+# repositories/monitor_repository.py (extensión mínima)
 import sqlite3
 import os
 from models.token import Token
@@ -10,6 +11,7 @@ class MonitorRepository:
     def __init__(self, db_path: str = DB_PATH):
         self.db_path = db_path
         self._ensure_table()
+        self._ensure_history_id_column()
 
     def _connect(self):
         return sqlite3.connect(self.db_path)
@@ -29,19 +31,54 @@ class MonitorRepository:
             ''')
             conn.commit()
 
+    def _ensure_history_id_column(self):
+        with self._connect() as conn:
+            cur = conn.execute("PRAGMA table_info(monitor_state)")
+            cols = {r[1] for r in cur.fetchall()}
+            if "history_id" not in cols:
+                conn.execute("ALTER TABLE monitor_state ADD COLUMN history_id INTEGER")
+                conn.commit()
+
+    @log_function
     def save_state(self, token: Token, session: TradeSession):
         pnl = ((token.price_native - session.buy_price_with_fees) / session.buy_price_with_fees) * 100
         with self._connect() as conn:
             conn.execute('''
                 INSERT OR REPLACE INTO monitor_state (
-                    pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'))
+                    pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at, history_id
+                ) VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'),
+                          COALESCE((SELECT history_id FROM monitor_state WHERE pair_address = ?), NULL))
             ''', (
                 token.pair_address,
                 token.symbol,
                 token.price_native,
                 session.entry_price,
-                token.buy_price_with_fees,
-                pnl
+                session.buy_price_with_fees,   # usa la del session, no la del token
+                pnl,
+                token.pair_address
             ))
+            conn.commit()
+
+    # --- helpers para vincular el ciclo con history ---
+    @log_function
+    def set_history_id(self, pair_address: str, history_id: int) -> None:
+        with self._connect() as conn:
+            conn.execute('''
+                INSERT INTO monitor_state (pair_address, history_id, updated_at)
+                VALUES (?, ?, strftime('%s','now'))
+                ON CONFLICT(pair_address) DO UPDATE SET history_id=excluded.history_id
+            ''', (pair_address, history_id))
+            conn.commit()
+
+    @log_function
+    def get_history_id(self, pair_address: str) -> int | None:
+        with self._connect() as conn:
+            cur = conn.execute("SELECT history_id FROM monitor_state WHERE pair_address = ?", (pair_address,))
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+
+    @log_function
+    def clear_history_id(self, pair_address: str) -> None:
+        with self._connect() as conn:
+            conn.execute("UPDATE monitor_state SET history_id = NULL WHERE pair_address = ?", (pair_address,))
             conn.commit()
