@@ -11,6 +11,12 @@ from __future__ import annotations
 from pydantic import BaseModel
 
 class TradeSession(BaseModel):
-    token_address: str
+    pair_address: str
+    symbol: str
+    price_native: float
     entry_price: float
-    min_acceptable_pnl: float = 2.0  # se puede parametrizar
+    buy_price_with_fees: float
+    pnl: float
+    updated_at: int = 0
+    
+    
