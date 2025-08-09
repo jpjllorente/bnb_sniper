@@ -2,9 +2,11 @@
 from __future__ import annotations
 import threading
 import time
+import os
 from typing import Callable, Dict, Optional
 
 from controllers.autobuy_controller import AutoBuyController
+from controllers.autosell_controller import AutoSellController
 from services.market_service import MarketService
 from repositories.monitor_repository import MonitorRepository
 from repositories.action_repository import ActionRepository
@@ -37,6 +39,7 @@ class MonitorOrchestrator:
         self.action_repo = ActionRepository(db_path=db_path)
         self.token_repo  = TokenRepository(db_path=db_path)
         self.autobuy     = AutoBuyController(db_path=db_path)
+        self.autosell = AutoSellController(db_path=self.db_path)
         self.market      = MarketService()
 
         self.poll_seconds = poll_seconds
@@ -240,17 +243,41 @@ class MonitorOrchestrator:
                 self.monitor_repo.save_state(token, session)
 
                 # 5) Lógica de auto-sell (coloca aquí tu política real)
-                # if should_sell(token, session):  # define tus reglas
-                #     res = self.autobuy.finalize_sell(
-                #         pair_address=pair_address,
-                #         sell_entry_price_bnb=price_now,
-                #         sell_price_with_fees_bnb=price_now,  # añade fees reales/estimadas
-                #         sell_real_price_bnb=price_now,
-                #         sell_amount_tokens=...,
-                #         bnb_amount=...
-                #     )
-                #     logger.info(f"[{pair_address}] venta ejecutada: {res}")
-                #     break
+                if token.price_native and session.buy_price_with_fees:
+                    pnl_now = ((token.price_native - session.buy_price_with_fees) / session.buy_price_with_fees) * 100.0
+                    if pnl_now >= 5.0 or pnl_now <= -5.0:
+                        sell_amount_tokens = 0.9 * (token_row.get("hold_amount_tokens") or 0.0)  # EJEMPLO: vender 90% (ajusta)
+                        if sell_amount_tokens > 0:
+                            prep = self.autosell.prepare_sell(
+                                pair_address=pair_address,
+                                token_address=token.address,
+                                sell_amount_tokens=sell_amount_tokens,
+                                slippage_percent=float(os.getenv("DEFAULT_SLIPPAGE", "3.0"))
+                            )
+                            if prep.get("ok"):
+                                # 1) approve si hace falta
+                                if prep["approve_tx"] is not None:
+                                    approve_hash = self.autobuy.w3s.sign_and_send(prep["approve_tx"])
+                                    logger.info(f"[{pair_address}] approve sent: {approve_hash}")
+
+                                # 2) enviar venta
+                                sell_hash = self.autobuy.w3s.sign_and_send(prep["sell_tx"])
+                                logger.info(f"[{pair_address}] sell sent: {sell_hash}")
+
+                                # 3) registrar resultado básico (aquí necesitarías datos reales del receipt)
+                                #    por ahora, si no tienes parsing del receipt, usamos aproximaciones
+                                sell_real_price_bnb = float(token.price_native)  # estimación; ideal: precio real por receipt
+                                bnb_amount = prep["amount_out_min_bnb_wei"] / 1e18  # conservador: mínimo esperado
+                                res = self.autosell.record_sell_result(
+                                    pair_address=pair_address,
+                                    sell_entry_price_bnb=float(token.price_native),
+                                    sell_price_with_fees_bnb=float(token.price_native),  # añade fees reales si los calculas
+                                    sell_real_price_bnb=sell_real_price_bnb,
+                                    sell_amount_tokens=sell_amount_tokens,
+                                    bnb_amount=bnb_amount
+                                )
+                                logger.info(f"[{pair_address}] venta registrada: {res}")
+                                break  # termina el hilo tras cerrar el ciclo
 
             except Exception as e:
                 logger.exception(f"[{pair_address}] error en worker: {e}")
