@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os, time
 from typing import Optional
+from web3 import Web3
 
 from services.web3_service import Web3Service
 from repositories.history_repository import HistoryRepository
@@ -239,3 +240,49 @@ class AutoBuyController:
 
         self.monitor_repo.clear_history_id(pair_address)
         return {"ok": True, "history_id": history_id, "pnl": pnl_percent, "bnb_amount": bnb_amount}
+    
+    @log_function
+    def await_and_record_buy_receipt(self, pair_address: str, token_address: str, token_decimals: int, tx_hash: str) -> dict:
+        """
+        Espera el receipt de la compra, parsea cuántos tokens se recibieron realmente,
+        calcula el precio real unitario (incluyendo gas) y lo persiste en history.
+        """
+        receipt = self.w3s.wait_for_receipt(tx_hash)
+        tx = self.w3s.get_transaction(tx_hash)
+        wallet = Web3.to_checksum_address(os.getenv("WALLET_ADDRESS"))
+        token_addr_cs = Web3.to_checksum_address(token_address)
+
+        TRANSFER_TOPIC = Web3.keccak(text="Transfer(address,address,uint256)").hex()
+        amount_received_tokens = None
+
+        for log in receipt["logs"]:
+            # buscamos Transfer del token hacia nuestra wallet
+            if log["address"].lower() == token_addr_cs.lower() and log["topics"][0].hex() == TRANSFER_TOPIC:
+                # topics[2] = 'to'
+                to_addr = Web3.to_checksum_address("0x" + log["topics"][2][-40:])
+                if to_addr == wallet:
+                    raw = int(log["data"], 16)
+                    amount_received_tokens = raw / (10 ** token_decimals)
+                    break
+
+        if amount_received_tokens is None or amount_received_tokens <= 0:
+            return {"ok": False, "reason": "No se pudo determinar la cantidad real recibida (Transfer no encontrado)."}
+
+        gas_used = int(receipt["gasUsed"])
+        gas_price = int(tx.get("gasPrice") or 0)
+        total_bnb_spent = self.w3s.wei_to_bnb(int(tx["value"]) + gas_used * gas_price)
+        buy_real_price_bnb = total_bnb_spent / amount_received_tokens
+
+        # persistimos en history
+        history_id = self.monitor_repo.get_history_id(pair_address)
+        if not history_id:
+            return {"ok": False, "reason": "history_id no encontrado en monitor"}
+
+        self.history_repo.set_buy_final_result(history_id, buy_real_price_bnb, amount_received_tokens)
+        return {
+            "ok": True,
+            "history_id": history_id,
+            "buy_real_price_bnb": buy_real_price_bnb,
+            "buy_amount_tokens": amount_received_tokens,
+            "gas_used": gas_used
+        }
