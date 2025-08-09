@@ -3,6 +3,7 @@ import os
 from typing import Any, List
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
+from web3.types import TxReceipt, HexBytes
 from eth_account import Account
 from utils.load_abi import load_erc20_abi, load_pancake_router_abi
 from utils.log_config import logger_manager, log_function
@@ -172,3 +173,14 @@ class Web3Service:
         amounts = self.get_amounts_out(amount_in_wei=amount_in_tokens_raw, path=path)  # reutiliza get_amounts_out
         amt_out = amounts[-1]
         return int(amt_out * (1 - (slippage / 100.0)))
+    
+    # -- utilidades de recibos/tx (añádelas a Web3Service) --
+
+    def wait_for_receipt(self, tx_hash: str | HexBytes, timeout: int = 180) -> TxReceipt:
+        return self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
+
+    def get_transaction(self, tx_hash: str | HexBytes):
+        return self._w3.eth.get_transaction(tx_hash)
+
+    def wei_to_bnb(self, wei: int | float) -> float:
+        return float(wei) / 1e18
