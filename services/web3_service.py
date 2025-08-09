@@ -22,15 +22,16 @@ class Web3Service:
                 dry_run: bool = True):
                 
         
-        self.rpc_url = os.getenv("BSC_RPC_URL")
-        self.private_key = os.getenv("PRIVATE_KEY")
-        self.wallet_address = os.getenv("WALLET_ADDRESS")
-        self.wbnb_address = os.getenv("WBNB_ADDRESS")
+        self.rpc_url = rpc_url
+        self.private_key = private_key
+        self.wallet_address = wallet_address
+        self.wbnb_address = wbnb_address
         self.erc20_abi = load_erc20_abi()
         self.router_abi = load_pancake_router_abi()
         self.web3 = Web3(Web3.HTTPProvider(self.rpc_url))
         self.web3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
         self.web3_controller = web3_controller or Web3Controller()
+        self.dry_run = dry_run
 
         if not self.web3.is_connected():
             logger.error("No se pudo conectar a la BNB Chain")
