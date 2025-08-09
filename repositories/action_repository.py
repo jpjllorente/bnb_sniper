@@ -77,3 +77,14 @@ class ActionRepository:
             cur.execute('SELECT tipo FROM acciones WHERE pair_address = ?', (pair_address,))
             row = cur.fetchone()
             return row[0] if row else None
+        
+    @log_function
+    def list_pairs(self, estado: str | None = None) -> list[str]:
+        q = "SELECT pair_address FROM acciones"
+        params = ()
+        if estado:
+            q += " WHERE estado = ?"
+            params = (estado,)
+        with self._connect() as conn:
+            cur = conn.execute(q, params)
+            return [r[0] for r in cur.fetchall()]
