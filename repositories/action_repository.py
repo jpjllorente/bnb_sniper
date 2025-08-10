@@ -88,3 +88,17 @@ class ActionRepository:
         with self._connect() as conn:
             cur = conn.execute(q, params)
             return [r[0] for r in cur.fetchall()]
+        
+    @log_function
+    def list_all(self, estado: str | None = None, limit: int = 50) -> list[dict]:
+        q = "SELECT pair_address, tipo, estado, timestamp FROM acciones"
+        params = []
+        if estado:
+            q += " WHERE estado = ?"
+            params.append(estado)
+        q += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            cur = conn.execute(q, tuple(params))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]

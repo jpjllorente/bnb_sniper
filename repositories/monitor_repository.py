@@ -82,3 +82,19 @@ class MonitorRepository:
         with self._connect() as conn:
             conn.execute("UPDATE monitor_state SET history_id = NULL WHERE pair_address = ?", (pair_address,))
             conn.commit()
+
+    @log_function
+    def list_monitored(self, limit: int = 50) -> list[dict]:
+        """
+        Devuelve filas recientes de monitor_state para enseñarlas en Telegram.
+        Campos: pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at, history_id
+        """
+        with self._connect() as conn:
+            cur = conn.execute("""
+                SELECT pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at, history_id
+                FROM monitor_state
+                ORDER BY updated_at DESC
+                LIMIT ?
+            """, (limit,))
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, r)) for r in cur.fetchall()]
