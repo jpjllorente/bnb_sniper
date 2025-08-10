@@ -1,87 +1,57 @@
-"""
-Centralized logging utilities for the bsc_sniper project.
-
-This module exposes a ``setup_logger`` function to configure loggers with a
-daily rotating file handler, and a ``log_function`` decorator to trace
-function entry and exit. By default, logs are written into a ``logs``
-directory one level above the package root with a filename of
-``bsc_sniper.log`` and at the DEBUG level.
-"""
-
 from __future__ import annotations
-
 import logging
-import os
-from datetime import datetime
-from services.telegram_service import TelegramService
+from logging.handlers import RotatingFileHandler
+import os, functools, time
 
-LOG_DIR = os.path.join(os.path.dirname(__file__), "../../logs")
-os.makedirs(LOG_DIR, exist_ok=True)
+_DEFAULT_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
+_LOG_FILE = os.getenv("LOG_FILE", "./logs/app.log")
+_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", "1048576"))
+_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "3"))
 
-LOG_TELEGRAM_ERRORS = os.getenv("LOG_TELEGRAM_ERRORS", "False") == "True"
-telegram_service = TelegramService() if LOG_TELEGRAM_ERRORS else None
+class _LoggerManager:
+    def __init__(self) -> None:
+        self._configured = False
 
+    def _ensure(self) -> None:
+        if self._configured:
+            return
+        level = getattr(logging, _DEFAULT_LEVEL, logging.DEBUG)
+        root = logging.getLogger()
+        root.setLevel(level)
 
-class TelegramErrorHandler(logging.Handler):
-    def __init__(self, telegram_service: TelegramService):
-        super().__init__(level=logging.ERROR)
-        self.telegram_service = telegram_service
+        fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                                datefmt="%Y-%m-%d %H:%M:%S")
 
-    def emit(self, record):
+        sh = logging.StreamHandler()
+        sh.setLevel(level); sh.setFormatter(fmt)
+        root.addHandler(sh)
+
         try:
-            msg = self.format(record)
-            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            mensaje = f"🛑 *Error crítico*\n\n`{timestamp}`\n{msg}"
-            self.telegram_service.notificar_error(mensaje)
+            fh = RotatingFileHandler(_LOG_FILE, maxBytes=_MAX_BYTES, backupCount=_BACKUP_COUNT, encoding="utf-8")
+            fh.setLevel(level); fh.setFormatter(fmt)
+            root.addHandler(fh)
         except Exception:
-            pass  # No debe romper el sistema
+            pass
 
-class LoggerManager:
-    def __init__(self, log_level=logging.DEBUG, enable_telegram: bool = False):
-        self.log_level = log_level
-        self.enable_telegram = enable_telegram
-        self.telegram_service = TelegramService() if enable_telegram else None
-        self._loggers = {}
+        self._configured = True
 
     def setup_logger(self, name: str) -> logging.Logger:
-        if name in self._loggers:
-            return self._loggers[name]
+        self._ensure()
+        return logging.getLogger(name)
 
-        logger = logging.getLogger(name)
-        logger.setLevel(self.log_level)
+logger_manager = _LoggerManager()
 
-        if not logger.handlers:
-            # File handler
-            file_handler = logging.FileHandler(f"{LOG_DIR}/{name.replace('.', '_')}.log")
-            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
-            logger.addHandler(file_handler)
-
-            # Console handler
-            stream_handler = logging.StreamHandler()
-            stream_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
-            logger.addHandler(stream_handler)
-
-            # Telegram handler
-            if self.enable_telegram and self.telegram_service:
-                tg_handler = TelegramErrorHandler(self.telegram_service)
-                tg_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
-                logger.addHandler(tg_handler)
-
-        self._loggers[name] = logger
-        return logger
-
-    def log_function(self, func):
-        """
-        Decorador para registrar entrada y salida de funciones.
-        """
-        def wrapper(*args, **kwargs):
-            logger = self.setup_logger(func.__module__)
-            logger.debug(f"→ {func.__name__}() args={args} kwargs={kwargs}")
-            try:
-                result = func(*args, **kwargs)
-                logger.debug(f"← {func.__name__}() result={result}")
-                return result
-            except Exception as e:
-                logger.exception(f"🔥 Excepción en {func.__name__}: {e}")
-                raise
-        return wrapper
+def log_function(func):
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        logger = logger_manager.setup_logger(func.__module__)
+        logger.debug(f"→ {func.__name__} args={args} kwargs={kwargs}")
+        t0 = time.time()
+        try:
+            result = func(*args, **kwargs)
+            logger.debug(f"← {func.__name__} ({(time.time()-t0)*1000:.1f} ms)")
+            return result
+        except Exception as e:
+            logger.exception(f"✗ {func.__name__}: {e}")
+            raise
+    return wrapper

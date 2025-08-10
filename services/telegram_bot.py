@@ -1,79 +1,92 @@
+from typing import Optional
 import os
-from telegram.ext import Updater, CommandHandler, CallbackContext
 from telegram import Update
-from controllers.telegram_controller import TelegramController
-from utils.log_config import logger_manager, log_function
-
-logger = logger_manager.setup_logger(__name__)
-
+from telegram.ext import Application, CommandHandler, ContextTypes
+from utils.log_config import logger
+from repositories.action_repository import ActionRepository
+from repositories.monitor_repository import MonitorRepository
 
 class TelegramBot:
-    def __init__(self, token: str | None = None):
+    def __init__(self, token: Optional[str] = None) -> None:
         self.token = token or os.getenv("TELEGRAM_TOKEN")
         if not self.token:
-            raise RuntimeError("Falta TELEGRAM_TOKEN en el entorno")
+            raise RuntimeError("Falta TELEGRAM_TOKEN")
 
-        self.controller = TelegramController()
-        self.updater = Updater(token=self.token, use_context=True)
-        self.dispatcher = self.updater.dispatcher
+        self.actions = ActionRepository(os.getenv("DB_PATH"))
+        self.monitor = MonitorRepository(os.getenv("DB_PATH"))
 
-        self.dispatcher.add_handler(CommandHandler("start", self.handle_start))
-        self.dispatcher.add_handler(CommandHandler("comprar", self.handle_comprar))
-        self.dispatcher.add_handler(CommandHandler("vender", self.handle_vender))
-        self.dispatcher.add_handler(CommandHandler("cancelar", self.handle_cancelar))
+        self.application = Application.builder().token(self.token).build()
 
-    def handle_start(self, update: Update, context: CallbackContext) -> None:
-        update.message.reply_text("🤖 Bot activo. Usa /comprar, /vender o /cancelar <pair_address>.")
+        # handlers existentes...
+        self.application.add_handler(CommandHandler("start", self.cmd_start))
+        self.application.add_handler(CommandHandler("acciones", self.cmd_acciones))
+        self.application.add_handler(CommandHandler("autorizar", self.cmd_autorizar))
+        self.application.add_handler(CommandHandler("cancelar", self.cmd_cancelar))
 
-    def _extraer_pair_address(self, update: Update, context: CallbackContext) -> str | None:
-        if len(context.args) != 1:
-            update.message.reply_text("⚠️ Uso correcto: /comando <pair_address>")
-            return None
-        return context.args[0]
+        # 🚀 Push automático de pendientes
+        interval = int(os.getenv("ACTIONS_PUSH_INTERVAL", "10"))
+        if interval > 0:
+            self.application.job_queue.run_repeating(
+                self._push_pending_actions, interval=interval, first=3, name="push_acciones"
+            )
 
-    def handle_comprar(self, update: Update, context: CallbackContext) -> None:
-        pair = self._extraer_pair_address(update, context)
-        if not pair:
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("Bot listo. Usa /acciones para ver pendientes.")
+
+    async def cmd_acciones(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        pend = self.actions.list_all(estado="pendiente", limit=50)
+        if not pend:
+            await update.message.reply_text("No hay acciones pendientes.")
             return
+        lines = []
+        for r in pend:
+            lines.append(f"• {r['pair_address']} — {r['tipo']} (ts {r['timestamp']})")
+        lines.append("\nUsa: /autorizar <pair>  |  /cancelar <pair>")
+        await update.message.reply_text("\n".join(lines))
 
-        estado = self.controller.obtener_estado(pair)
-        if not estado:
-            update.message.reply_text(f"⚠️ No hay solicitud de COMPRA pendiente para {pair}")
+    async def cmd_autorizar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not context.args:
+            await update.message.reply_text("Uso: /autorizar <pair_address>")
             return
+        pair = context.args[0]
+        self.actions.autorizar_accion(pair)
+        await update.message.reply_text(f"✅ Aprobada: {pair}")
 
-        self.controller.autorizar_accion(pair)
-        update.message.reply_text(f"✅ Compra autorizada para {pair}")
-        logger.info(f"Telegram: COMPRA autorizada para {pair}")
-
-    def handle_vender(self, update: Update, context: CallbackContext) -> None:
-        pair = self._extraer_pair_address(update, context)
-        if not pair:
+    async def cmd_cancelar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not context.args:
+            await update.message.reply_text("Uso: /cancelar <pair_address>")
             return
+        pair = context.args[0]
+        self.actions.cancelar_accion(pair)
+        await update.message.reply_text(f"🛑 Cancelada: {pair}")
 
-        estado = self.controller.obtener_estado(pair)
-        if not estado:
-            update.message.reply_text(f"⚠️ No hay solicitud de VENTA pendiente para {pair}")
+    async def _push_pending_actions(self, context: ContextTypes.DEFAULT_TYPE):
+        """Escanea acciones pendientes sin notificar y las envía 1 sola vez."""
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            logger.warning("TELEGRAM_CHAT_ID no definido; no puedo enviar push.")
             return
+        try:
+            rows = self.actions.list_pending_not_notified(limit=20)
+            for r in rows:
+                msg = (
+                    "⚠️ *Acción pendiente*\n"
+                    f"*Pair:* `{r['pair_address']}`\n"
+                    f"*Tipo:* {r['tipo']}\n\n"
+                    f"Comandos:\n"
+                    f"/autorizar {r['pair_address']}\n"
+                    f"/cancelar {r['pair_address']}"
+                )
+                await context.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=msg,
+                    parse_mode="Markdown"
+                )
+                # marcar como notificada para no reenviar
+                self.actions.marcar_notificado(r["pair_address"])
+        except Exception as e:
+            logger.exception(f"[push_pending_actions] error: {e}")
 
-        self.controller.autorizar_accion(pair)
-        update.message.reply_text(f"✅ Venta autorizada para {pair}")
-        logger.info(f"Telegram: VENTA autorizada para {pair}")
-
-    def handle_cancelar(self, update: Update, context: CallbackContext) -> None:
-        pair = self._extraer_pair_address(update, context)
-        if not pair:
-            return
-
-        estado = self.controller.obtener_estado(pair)
-        if not estado:
-            update.message.reply_text(f"⚠️ No hay ninguna acción pendiente para {pair}")
-            return
-
-        self.controller.cancelar_accion(pair)
-        update.message.reply_text(f"🚫 Acción cancelada para {pair}")
-        logger.info(f"Telegram: ACCIÓN cancelada para {pair}")
-
-    def start(self):
-        logger.info("🤖 Bot de Telegram iniciado.")
-        self.updater.start_polling()
-        self.updater.idle()
+    def run(self):
+        logger.info("TelegramBot iniciando...")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
