@@ -18,6 +18,8 @@ except Exception:
 
 # ---- imports del proyecto ----
 from orchestrators.monitor_orchestrator import MonitorOrchestrator
+from orchestrators.discovery_orchestrator import DiscoveryOrchestrator
+
 from services.telegram_bot import TelegramBot
 from utils.log_config import logger_manager
 
@@ -60,33 +62,74 @@ def start_orchestrator(stop_event: threading.Event):
 
 def start_telegram_bot(stop_event: threading.Event):
     """
-    Arranca el bot v20 en un hilo; run_polling() bloquea ese hilo.
+    Arranca el bot v20+ en un hilo secundario *creando la Application y el loop en ese hilo*.
+    Desactiva signal handlers (solo válidos en el hilo principal).
     """
-    try:
-        bot = TelegramBot()
-    except Exception as e:
-        logger.error(f"No se pudo iniciar TelegramBot: {e}")
-        return
-    start_telegram_bot.instance = bot  # type: ignore[attr-defined]
+    start_telegram_bot.instance = None  # será asignado dentro del hilo
 
     def _run():
+        import asyncio, platform
+        # Policy compatible con hilos en Windows
+        if platform.system() == "Windows":
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
         try:
-            bot.run_polling()
+            # 👇 construir el bot (y la Application) *dentro del hilo con loop activo*
+            from services.telegram_bot import TelegramBot
+            bot = TelegramBot()
+            start_telegram_bot.instance = bot  # para poder pararlo desde fuera
+
+            # run_polling en este hilo, sin instalar signal handlers
+            bot.application.run_polling(stop_signals=None, close_loop=False)
         except Exception as e:
             logger.error(f"Fallo en TelegramBot: {e}")
+        finally:
+            try:
+                loop.stop()
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
 
-    t = threading.Thread(target=_run, name="TelegramBot", daemon=True)
+    t = threading.Thread(target=_run, name="Telegram", daemon=True)
     t.start()
 
+    # Esperar solicitud de parada global
     while not stop_event.is_set():
         time.sleep(0.5)
 
-    # parada suave
+    # Parada suave del bot cuando exista la instancia
     try:
-        bot.stop_running()
+        for _ in range(50):  # esperar hasta 5s a que se cree la instancia
+            bot = getattr(start_telegram_bot, "instance", None)
+            if bot is not None:
+                break
+            time.sleep(0.1)
+        if bot is not None:
+            bot.stop_running()  # hace que run_polling() termine
     except Exception as e:
         logger.error(f"Error al parar TelegramBot: {e}")
-        
+
+def start_discovery(stop_event: threading.Event):
+    """
+    Hilo de descubrimiento periódico (Dexscreener + GoPlus).
+    Crea acciones 'compra' y las autoriza si están dentro de parámetros,
+    o deja 'pendiente' y notifica por Telegram si no lo están.
+    """
+    disc = DiscoveryOrchestrator(db_path=DB_PATH)
+    start_discovery.instance = disc  # type: ignore[attr-defined]
+    disc.start()
+    while not stop_event.is_set():
+        time.sleep(0.5)
+    try:
+        disc.stop()
+    except Exception as e:
+        logger.error(f"Error al parar Discovery: {e}")
+
 def start_streamlit_process() -> subprocess.Popen:
     """
     Lanza streamlit como proceso aparte.
@@ -152,10 +195,14 @@ if __name__ == "__main__":
     bot_thread = threading.Thread(target=start_telegram_bot, args=(stop_all_evt,), name="Telegram", daemon=True)
     bot_thread.start()
 
-    # 3) Streamlit (proceso)
+    # 3) Discovery
+    disc_thread = threading.Thread(target=start_discovery, args=(stop_all_evt,), name="Discovery", daemon=True)
+    disc_thread.start()
+
+    # 4) Streamlit (proceso)
     streamlit_proc = start_streamlit_process()
 
-    # 4) Espera bloqueante hasta que streamlit termine o llegue señal
+    # 5) Espera bloqueante hasta que streamlit termine o llegue señal
     try:
         while not stop_all_evt.is_set():
             # si streamlit muere solo, paramos todo
@@ -168,3 +215,4 @@ if __name__ == "__main__":
         shutdown()
         # dar un poco de tiempo a los hilos a cerrarse bien
         time.sleep(0.8)
+        

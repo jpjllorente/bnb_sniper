@@ -11,6 +11,7 @@ requests>=2.32.3
 aiohttp>=3.10.5
 python-dotenv>=1.0.1
 python-dateutil>=2.9.0.post0
+asyncio>=4.0.0
 
 # ── Datos / UI ───────────────────────────────────────────────────────────────
 pandas>=2.2.2
