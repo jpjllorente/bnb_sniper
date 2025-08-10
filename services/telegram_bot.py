@@ -2,9 +2,11 @@ from typing import Optional
 import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
-from utils.log_config import logger
 from repositories.action_repository import ActionRepository
 from repositories.monitor_repository import MonitorRepository
+from utils.log_config import logger_manager, log_function
+
+logger = logger_manager.setup_logger(__name__)
 
 class TelegramBot:
     def __init__(self, token: Optional[str] = None) -> None:
@@ -17,13 +19,13 @@ class TelegramBot:
 
         self.application = Application.builder().token(self.token).build()
 
-        # handlers existentes...
+        # Handlers básicos
         self.application.add_handler(CommandHandler("start", self.cmd_start))
         self.application.add_handler(CommandHandler("acciones", self.cmd_acciones))
         self.application.add_handler(CommandHandler("autorizar", self.cmd_autorizar))
         self.application.add_handler(CommandHandler("cancelar", self.cmd_cancelar))
 
-        # 🚀 Push automático de pendientes
+        # 🚀 Push automático de pendientes (si ACTIONS_PUSH_INTERVAL > 0)
         interval = int(os.getenv("ACTIONS_PUSH_INTERVAL", "10"))
         if interval > 0:
             self.application.job_queue.run_repeating(
@@ -50,7 +52,14 @@ class TelegramBot:
             return
         pair = context.args[0]
         self.actions.autorizar_accion(pair)
-        await update.message.reply_text(f"✅ Aprobada: {pair}")
+        await update.message.reply_text(f"✅ Aprobada: `{pair}`\nSe envía al pipeline.", parse_mode="Markdown")
+
+        # En DRY_RUN avisamos explícitamente que simulamos la compra (el pipeline debería recoger 'aprobada')
+        if (os.getenv("DRY_RUN", "").lower() in ("true", "1", "yes")):
+            await update.message.reply_text(
+                f"🧪 DRY-RUN: simulación de *orden de compra* para `{pair}` enviada.",
+                parse_mode="Markdown"
+            )
 
     async def cmd_cancelar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
@@ -58,10 +67,10 @@ class TelegramBot:
             return
         pair = context.args[0]
         self.actions.cancelar_accion(pair)
-        await update.message.reply_text(f"🛑 Cancelada: {pair}")
+        await update.message.reply_text(f"🛑 Cancelada: `{pair}`", parse_mode="Markdown")
 
     async def _push_pending_actions(self, context: ContextTypes.DEFAULT_TYPE):
-        """Escanea acciones pendientes sin notificar y las envía 1 sola vez."""
+        """Escanea acciones 'pendiente' sin notificar y las envía 1 sola vez."""
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not chat_id:
             logger.warning("TELEGRAM_CHAT_ID no definido; no puedo enviar push.")

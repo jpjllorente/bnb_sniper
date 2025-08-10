@@ -42,7 +42,6 @@ class ActionRepository:
     @log_function
     def registrar_accion(self, pair_address: str, tipo: str):
         with self._connect() as conn:
-            # nueva pendiente => limpiar notified_at para que se notifique
             conn.execute("""
                 INSERT INTO acciones (pair_address, tipo, estado, timestamp, notified_at)
                 VALUES (?, ?, 'pendiente', strftime('%s','now'), NULL)
