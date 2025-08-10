@@ -1,4 +1,4 @@
-# repositories/monitor_repository.py (extensión mínima)
+# repositories/monitor_repository.py
 import sqlite3
 import os
 from models.token import Token
@@ -41,32 +41,47 @@ class MonitorRepository:
 
     @log_function
     def save_state(self, token: Token, session: TradeSession):
-        pnl = ((token.price_native - session.buy_price_with_fees) / session.buy_price_with_fees) * 100
+        """Actualiza fila del par con PnL basado en la sesión (todo en BNB)."""
+        pnl = None
+        if session.buy_price_with_fees and token.price_native:
+            try:
+                pnl = ((token.price_native - session.buy_price_with_fees) / session.buy_price_with_fees) * 100.0
+            except ZeroDivisionError:
+                pnl = None
+
         with self._connect() as conn:
             conn.execute('''
-                INSERT OR REPLACE INTO monitor_state (
+                INSERT INTO monitor_state (
                     pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at, history_id
-                ) VALUES (?, ?, ?, ?, ?, ?, strftime('%s', 'now'),
-                          COALESCE((SELECT history_id FROM monitor_state WHERE pair_address = ?), NULL))
+                ) VALUES (?, ?, ?, ?, ?, ?, strftime('%s','now'),
+                    COALESCE((SELECT history_id FROM monitor_state WHERE pair_address = ?), NULL)
+                )
+                ON CONFLICT(pair_address) DO UPDATE SET
+                    symbol = excluded.symbol,
+                    price  = excluded.price,
+                    entry_price = excluded.entry_price,
+                    buy_price_with_fees = excluded.buy_price_with_fees,
+                    pnl = excluded.pnl,
+                    updated_at = excluded.updated_at
             ''', (
                 token.pair_address,
                 token.symbol,
                 token.price_native,
                 session.entry_price,
-                session.buy_price_with_fees,   # usa la del session, no la del token
+                session.buy_price_with_fees,
                 pnl,
                 token.pair_address
             ))
             conn.commit()
 
-    # --- helpers para vincular el ciclo con history ---
+    # Vinculación con history
     @log_function
     def set_history_id(self, pair_address: str, history_id: int) -> None:
         with self._connect() as conn:
             conn.execute('''
                 INSERT INTO monitor_state (pair_address, history_id, updated_at)
                 VALUES (?, ?, strftime('%s','now'))
-                ON CONFLICT(pair_address) DO UPDATE SET history_id=excluded.history_id
+                ON CONFLICT(pair_address) DO UPDATE SET history_id = excluded.history_id
             ''', (pair_address, history_id))
             conn.commit()
 
@@ -83,12 +98,9 @@ class MonitorRepository:
             conn.execute("UPDATE monitor_state SET history_id = NULL WHERE pair_address = ?", (pair_address,))
             conn.commit()
 
+    # Listado para Telegram/Streamlit
     @log_function
     def list_monitored(self, limit: int = 50) -> list[dict]:
-        """
-        Devuelve filas recientes de monitor_state para enseñarlas en Telegram.
-        Campos: pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at, history_id
-        """
         with self._connect() as conn:
             cur = conn.execute("""
                 SELECT pair_address, symbol, price, entry_price, buy_price_with_fees, pnl, updated_at, history_id
