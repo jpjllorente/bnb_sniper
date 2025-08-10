@@ -14,7 +14,9 @@ class MonitorRepository:
         self._ensure_history_id_column()
 
     def _connect(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def _ensure_table(self):
         with self._connect() as conn:
@@ -41,7 +43,6 @@ class MonitorRepository:
 
     @log_function
     def save_state(self, token: Token, session: TradeSession):
-        """Actualiza fila del par con PnL basado en la sesión (todo en BNB)."""
         pnl = None
         if session.buy_price_with_fees and token.price_native:
             try:
@@ -74,7 +75,7 @@ class MonitorRepository:
             ))
             conn.commit()
 
-    # Vinculación con history
+    # vínculo con history
     @log_function
     def set_history_id(self, pair_address: str, history_id: int) -> None:
         with self._connect() as conn:
@@ -88,8 +89,7 @@ class MonitorRepository:
     @log_function
     def get_history_id(self, pair_address: str) -> int | None:
         with self._connect() as conn:
-            cur = conn.execute("SELECT history_id FROM monitor_state WHERE pair_address = ?", (pair_address,))
-            row = cur.fetchone()
+            row = conn.execute("SELECT history_id FROM monitor_state WHERE pair_address = ?", (pair_address,)).fetchone()
             return int(row[0]) if row and row[0] is not None else None
 
     @log_function
@@ -98,7 +98,7 @@ class MonitorRepository:
             conn.execute("UPDATE monitor_state SET history_id = NULL WHERE pair_address = ?", (pair_address,))
             conn.commit()
 
-    # Listado para Telegram/Streamlit
+    # listados para Streamlit/Telegram
     @log_function
     def list_monitored(self, limit: int = 50) -> list[dict]:
         with self._connect() as conn:

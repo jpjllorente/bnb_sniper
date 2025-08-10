@@ -9,13 +9,14 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "../../memecoins.db")
 
 class HistoryRepository:
     """
-    Solo persistencia de ciclos compra-venta.
-    NO gestiona estado (eso vive en repository_token).
-    NO modifica rutas: el llamador proporciona db_path existente.
+    Persistencia de ciclos compra-venta (UNA fila por ciclo).
+    - Todos los precios en BNB/token (unitarios).
+    - bnb_amount = beneficio en BNB del ciclo (venta - compra).
+    - pnl = ((sell_real_price - buy_real_price)/buy_real_price) * sell_amount * 100
     """
     def __init__(self, db_path: str = DB_PATH) -> None:
         self.db_path = db_path
-        self._ensure_schema()
+        self._ensure_table()
 
     @contextmanager
     def _conn(self):
@@ -23,110 +24,107 @@ class HistoryRepository:
         conn.row_factory = sqlite3.Row
         try:
             yield conn
-            conn.commit()
         finally:
             conn.close()
 
-    def _ensure_schema(self) -> None:
+    def _ensure_table(self) -> None:
         with self._conn() as c:
             c.execute("""
-                CREATE TABLE IF NOT EXISTS history (
-                    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                    -- Identificación del activo/par
-                    pair_address         TEXT    NOT NULL,
-                    token_address        TEXT    NOT NULL,
-                    symbol               TEXT,
-                    name                 TEXT,
-
-                    -- Compra
-                    buy_entry_price      REAL,     -- price_native al iniciar compra
-                    buy_price_with_fees  REAL,     -- price_native + gas + buy_fee + transfer_fee (estimado)
-                    buy_real_price       REAL,     -- (precio total / buy_amount) tras TX
-                    buy_amount           REAL,     -- unidades reales compradas
-                    buy_date             INTEGER,  -- timestamp (segundos)
-
-                    -- Venta
-                    sell_entry_price     REAL,     -- price_native al iniciar venta
-                    sell_price_with_fees REAL,     -- price_native + gas + sell_fee + transfer_fee (estimado)
-                    sell_real_price      REAL,     -- (precio total / sell_amount) tras TX
-                    sell_amount          REAL,     -- unidades reales vendidas
-
-                    -- Resultados
-                    pnl                  REAL,     -- (((sell_real_price - buy_real_price)/buy_real_price)*sell_amount * 100)
-                    bnb_amount           REAL      -- beneficios en BNB
-                );
+            CREATE TABLE IF NOT EXISTS history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair_address   TEXT NOT NULL,
+                token_address  TEXT NOT NULL,
+                symbol         TEXT,
+                name           TEXT,
+                -- COMPRA (campos de entrada y resultado real)
+                buy_entry_price     REAL,
+                buy_price_with_fees REAL,
+                buy_real_price      REAL,
+                buy_amount          REAL,
+                buy_date            INTEGER,
+                -- VENTA (campos de entrada y resultado real)
+                sell_entry_price     REAL,
+                sell_price_with_fees REAL,
+                sell_real_price      REAL,
+                sell_amount          REAL,
+                sell_date            INTEGER,
+                -- RESULTADO
+                pnl         REAL,
+                bnb_amount  REAL
+            )
             """)
-            # Índices útiles; no cambian tu lógica de estado
-            c.execute("CREATE INDEX IF NOT EXISTS idx_history_pair  ON history(pair_address);")
-            c.execute("CREATE INDEX IF NOT EXISTS idx_history_token ON history(token_address);")
+            c.commit()
 
-    # ---------- CRUD específico de tus fases ----------
-    def create_buy(self,
-                   pair_address: str,
-                   token_address: str,
-                   symbol: Optional[str],
-                   name: Optional[str],
-                   buy_entry_price: Optional[float],
-                   buy_price_with_fees: Optional[float],
-                   buy_date_ts: int) -> int:
-        """
-        Inserta al iniciar la compra (no conocemos aún buy_real_price/buy_amount).
-        Devuelve history_id.
-        """
+    # -------------------- COMPRAS --------------------
+
+    def create_buy(
+        self,
+        pair_address: str,
+        token_address: str,
+        symbol: Optional[str],
+        name: Optional[str],
+        buy_entry_price: Optional[float],
+        buy_price_with_fees: Optional[float],
+        buy_date_ts: int
+    ) -> int:
+        """Crea registro de compra (sin resultado real aún). Devuelve history_id."""
         with self._conn() as c:
             cur = c.execute("""
                 INSERT INTO history (
                     pair_address, token_address, symbol, name,
-                    buy_entry_price, buy_price_with_fees, buy_real_price, buy_amount, buy_date,
-                    sell_entry_price, sell_price_with_fees, sell_real_price, sell_amount,
-                    pnl, bnb_amount
-                ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL, NULL, NULL)
+                    buy_entry_price, buy_price_with_fees, buy_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 pair_address, token_address, symbol, name,
                 buy_entry_price, buy_price_with_fees, buy_date_ts
             ))
+            c.commit()
             return int(cur.lastrowid)
 
     def set_buy_final_result(self, history_id: int, buy_real_price: float, buy_amount: float) -> None:
-        """
-        Actualiza con los datos reales tras la TX de compra.
-        """
+        """Rellena precio y unidades reales tras el receipt de compra."""
         with self._conn() as c:
             c.execute("""
                 UPDATE history
                    SET buy_real_price = ?, buy_amount = ?
                  WHERE id = ?
             """, (buy_real_price, buy_amount, history_id))
+            c.commit()
 
-    def finalize_sell(self,
-                      history_id: int,
-                      sell_entry_price: Optional[float],
-                      sell_price_with_fees: Optional[float],
-                      sell_real_price: float,
-                      sell_amount: float,
-                      pnl: float,
-                      bnb_amount: float) -> None:
-        """
-        Actualiza con los datos reales de venta y resultados (pnl, bnb_amount).
-        """
+    # -------------------- VENTAS --------------------
+
+    def finalize_sell(
+        self,
+        history_id: int,
+        sell_entry_price: Optional[float],
+        sell_price_with_fees: Optional[float],
+        sell_real_price: float,
+        sell_amount: float,
+        pnl: float,
+        bnb_amount: float,
+        sell_date_ts: Optional[int] = None
+    ) -> None:
+        """Completa el ciclo con los datos reales de venta, pnl y bnb_amount."""
         with self._conn() as c:
             c.execute("""
                 UPDATE history
-                   SET sell_entry_price     = ?,
+                   SET sell_entry_price = ?,
                        sell_price_with_fees = ?,
-                       sell_real_price      = ?,
-                       sell_amount          = ?,
-                       pnl                  = ?,
-                       bnb_amount           = ?
+                       sell_real_price = ?,
+                       sell_amount = ?,
+                       sell_date = COALESCE(?, strftime('%s','now')),
+                       pnl = ?,
+                       bnb_amount = ?
                  WHERE id = ?
             """, (
                 sell_entry_price, sell_price_with_fees,
-                sell_real_price, sell_amount,
+                sell_real_price, sell_amount, sell_date_ts,
                 pnl, bnb_amount, history_id
             ))
+            c.commit()
 
-    # ---------- Consultas de apoyo ----------
+    # -------------------- CONSULTAS --------------------
+
     def get_by_id(self, history_id: int) -> Optional[dict[str, Any]]:
         with self._conn() as c:
             row = c.execute("SELECT * FROM history WHERE id = ?", (history_id,)).fetchone()
@@ -146,3 +144,35 @@ class HistoryRepository:
         with self._conn() as c:
             rows = c.execute("SELECT * FROM history ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
             return [dict(r) for r in rows]
+
+    def summary(self) -> dict[str, Any]:
+        """
+        Resumen rápido: nº de ciclos cerrados (con sell_real_price no nulo),
+        suma de bnb_amount y PnL medio ponderado por tokens vendidos.
+        """
+        with self._conn() as c:
+            rows = c.execute("""
+                SELECT sell_real_price, buy_real_price, sell_amount, bnb_amount
+                  FROM history
+                 WHERE sell_real_price IS NOT NULL
+            """).fetchall()
+            total_cycles = 0
+            total_bnb = 0.0
+            total_weight = 0.0
+            sum_weighted_pnl = 0.0
+            for r in rows:
+                sell_r = r[0]; buy_r = r[1]; amt = r[2] or 0.0; bnb = r[3] or 0.0
+                if sell_r is None or buy_r is None or amt <= 0: 
+                    continue
+                total_cycles += 1
+                total_bnb += float(bnb)
+                # PnL% * tokens (coherente con tu definición)
+                pnl_percent_tokens = ((sell_r - buy_r) / max(buy_r, 1e-18)) * amt * 100.0
+                sum_weighted_pnl += pnl_percent_tokens
+                total_weight += amt
+            avg_pnl_percent = (sum_weighted_pnl / total_weight) if total_weight > 0 else 0.0
+            return {
+                "closed_cycles": total_cycles,
+                "bnb_profit_total": total_bnb,
+                "avg_pnl_percent_tokens": avg_pnl_percent
+            }

@@ -11,7 +11,9 @@ class ActionRepository:
         self._create_table()
 
     def _connect(self):
-        return sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        return conn
 
     def _create_table(self):
         with self._connect() as conn:
@@ -50,15 +52,13 @@ class ActionRepository:
     @log_function
     def obtener_estado(self, pair_address: str) -> str | None:
         with self._connect() as conn:
-            cur = conn.execute('SELECT estado FROM acciones WHERE pair_address = ?', (pair_address,))
-            row = cur.fetchone()
+            row = conn.execute('SELECT estado FROM acciones WHERE pair_address = ?', (pair_address,)).fetchone()
             return row[0] if row else None
 
     @log_function
     def obtener_tipo(self, pair_address: str) -> str | None:
         with self._connect() as conn:
-            cur = conn.execute('SELECT tipo FROM acciones WHERE pair_address = ?', (pair_address,))
-            row = cur.fetchone()
+            row = conn.execute('SELECT tipo FROM acciones WHERE pair_address = ?', (pair_address,)).fetchone()
             return row[0] if row else None
 
     @log_function
@@ -67,7 +67,7 @@ class ActionRepository:
             conn.execute('DELETE FROM acciones WHERE pair_address = ?', (pair_address,))
             conn.commit()
 
-    # Listados para Telegram/Orquestador
+    # listados para Telegram/Orquestador/Streamlit
     @log_function
     def list_all(self, estado: str | None = None, limit: int = 50) -> list[dict]:
         q = "SELECT pair_address, tipo, estado, timestamp FROM acciones"

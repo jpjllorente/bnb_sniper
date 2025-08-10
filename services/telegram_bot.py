@@ -1,4 +1,4 @@
-# bots/telegram_bot.py
+# services/telegram_bot.py
 import os
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -38,9 +38,9 @@ class TelegramBot:
             "  /acciones  → ver acciones pendientes y gestionar\n"
             "  /monitoreo → ver tokens monitorizados\n"
             "  /estado <pair>\n"
-            "  /comprar <pair> (autoriza compra pendiente)\n"
-            "  /vender <pair>  (autoriza venta pendiente)\n"
-            "  /cancelar <pair> (cancela acción pendiente)"
+            "  /comprar <pair>\n"
+            "  /vender <pair>\n"
+            "  /cancelar <pair>"
         )
 
     def _pair_arg(self, update: Update, context: CallbackContext):
@@ -49,7 +49,7 @@ class TelegramBot:
             return None
         return context.args[0].strip()
 
-    # ---- Estado individual
+    # Estado individual
     def handle_estado(self, update: Update, context: CallbackContext) -> None:
         pair = self._pair_arg(update, context)
         if not pair:
@@ -58,7 +58,7 @@ class TelegramBot:
         tipo   = self.controller.obtener_tipo(pair) or "-"
         update.message.reply_text(f"ℹ️ {pair}\nTipo: {tipo}\nEstado: {estado}")
 
-    # ---- Acciones pendientes (lista)
+    # Acciones pendientes
     def handle_acciones(self, update: Update, _: CallbackContext) -> None:
         rows = self.actions.list_all(estado="pendiente", limit=50)
         if not rows:
@@ -75,7 +75,7 @@ class TelegramBot:
                 parse_mode="Markdown", reply_markup=kb
             )
 
-    # ---- Monitoreo (lista)
+    # Monitoreo (snapshot de monitor_state)
     def handle_monitoreo(self, update: Update, _: CallbackContext) -> None:
         rows = self.monitor.list_monitored(limit=30)
         if not rows:
@@ -93,7 +93,7 @@ class TelegramBot:
                 parse_mode="Markdown", reply_markup=kb
             )
 
-    # ---- Autorizaciones directas por comando
+    # Autorizaciones directas por comando
     def handle_comprar(self, update: Update, context: CallbackContext) -> None:
         pair = self._pair_arg(update, context)
         if not pair: return
@@ -120,7 +120,7 @@ class TelegramBot:
         self.controller.cancelar_accion(pair)
         update.message.reply_text(f"🚫 Acción cancelada para `{pair}`", parse_mode="Markdown")
 
-    # ---- Callbacks de botones inline
+    # Callbacks de botones inline
     def handle_callback(self, update: Update, context: CallbackContext) -> None:
         q = update.callback_query
         if not q or not q.data:
@@ -147,7 +147,6 @@ class TelegramBot:
                     q.answer("No existe acción para ese par.")
 
         elif kind == "mon" and action == "state":
-            # Mostrar snapshot del monitor_state
             row = next((r for r in self.monitor.list_monitored(limit=100) if r["pair_address"] == pair), None)
             if not row:
                 q.answer("No encontrado."); return
@@ -167,3 +166,8 @@ class TelegramBot:
                 f"PnL: {pnl_txt}",
                 parse_mode="Markdown"
             )
+
+    def start(self):
+        logger.info("🤖 Bot de Telegram iniciado.")
+        self.updater.start_polling()
+        self.updater.idle()
