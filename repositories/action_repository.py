@@ -1,4 +1,4 @@
-# repositories/action_repository.py (añadidos opcionales)
+# repositories/action_repository.py
 import sqlite3
 import os
 from utils.log_config import log_function
@@ -38,61 +38,40 @@ class ActionRepository:
     @log_function
     def autorizar_accion(self, pair_address: str):
         with self._connect() as conn:
-            conn.execute('''
-                UPDATE acciones
-                SET estado = 'aprobada'
-                WHERE pair_address = ?
-            ''', (pair_address,))
+            conn.execute('UPDATE acciones SET estado = "aprobada" WHERE pair_address = ?', (pair_address,))
             conn.commit()
 
     @log_function
     def cancelar_accion(self, pair_address: str):
         with self._connect() as conn:
-            conn.execute('''
-                UPDATE acciones
-                SET estado = 'cancelada'
-                WHERE pair_address = ?
-            ''', (pair_address,))
+            conn.execute('UPDATE acciones SET estado = "cancelada" WHERE pair_address = ?', (pair_address,))
             conn.commit()
 
     @log_function
     def obtener_estado(self, pair_address: str) -> str | None:
         with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute('SELECT estado FROM acciones WHERE pair_address = ?', (pair_address,))
+            cur = conn.execute('SELECT estado FROM acciones WHERE pair_address = ?', (pair_address,))
             row = cur.fetchone()
             return row[0] if row else None
 
-    # opcionales
+    @log_function
+    def obtener_tipo(self, pair_address: str) -> str | None:
+        with self._connect() as conn:
+            cur = conn.execute('SELECT tipo FROM acciones WHERE pair_address = ?', (pair_address,))
+            row = cur.fetchone()
+            return row[0] if row else None
+
     @log_function
     def limpiar(self, pair_address: str):
         with self._connect() as conn:
             conn.execute('DELETE FROM acciones WHERE pair_address = ?', (pair_address,))
             conn.commit()
 
-    @log_function
-    def obtener_tipo(self, pair_address: str) -> str | None:
-        with self._connect() as conn:
-            cur = conn.cursor()
-            cur.execute('SELECT tipo FROM acciones WHERE pair_address = ?', (pair_address,))
-            row = cur.fetchone()
-            return row[0] if row else None
-        
-    @log_function
-    def list_pairs(self, estado: str | None = None) -> list[str]:
-        q = "SELECT pair_address FROM acciones"
-        params = ()
-        if estado:
-            q += " WHERE estado = ?"
-            params = (estado,)
-        with self._connect() as conn:
-            cur = conn.execute(q, params)
-            return [r[0] for r in cur.fetchall()]
-        
+    # Listados para Telegram/Orquestador
     @log_function
     def list_all(self, estado: str | None = None, limit: int = 50) -> list[dict]:
         q = "SELECT pair_address, tipo, estado, timestamp FROM acciones"
-        params = []
+        params: list = []
         if estado:
             q += " WHERE estado = ?"
             params.append(estado)
@@ -102,3 +81,14 @@ class ActionRepository:
             cur = conn.execute(q, tuple(params))
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+    @log_function
+    def list_pairs(self, estado: str | None = None) -> list[str]:
+        q = "SELECT pair_address FROM acciones"
+        params: list = []
+        if estado:
+            q += " WHERE estado = ?"
+            params.append(estado)
+        with self._connect() as conn:
+            cur = conn.execute(q, tuple(params))
+            return [r[0] for r in cur.fetchall()]
