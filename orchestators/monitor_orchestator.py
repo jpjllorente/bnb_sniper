@@ -14,6 +14,14 @@ from repositories.token_repository import TokenRepository
 from utils.log_config import logger_manager, log_function
 from models.trade_session import TradeSession
 from models.token import Token
+import os
+from controllers.autosell_controller import AutoSellController
+
+TAKE_PROFIT_PCT  = float(os.getenv("TAKE_PROFIT_PCT",  "5.0"))
+TRAILING_GAP_PCT = float(os.getenv("TRAILING_GAP_PCT", "3.0"))
+STOP_LOSS_PCT    = float(os.getenv("STOP_LOSS_PCT",    "7.0"))
+DEFAULT_SLIPPAGE = float(os.getenv("DEFAULT_SLIPPAGE", "3.0"))
+SELL_PERCENT     = float(os.getenv("SELL_PERCENT",     "1.0"))  # 1.0 = 100%
 
 logger = logger_manager.setup_logger(__name__)
 
@@ -48,6 +56,7 @@ class MonitorOrchestrator:
 
         self._threads: Dict[str, dict] = {}  # pair_address -> {thread, stop_evt}
         self._stop_evt = threading.Event()
+        self._trail: Dict[str, dict] = {}   # pair -> {"armed": bool, "peak": float, "trailing_stop": float, "stop_loss": float}
 
     # ---------- API pública ----------
     @log_function
@@ -241,30 +250,60 @@ class MonitorOrchestrator:
                 self.monitor_repo.save_state(token, session)
 
                 # 5) Lógica de auto-sell (coloca aquí tu política real)
-                h = self.autobuy.history_repo.get_by_id(self.monitor_repo.get_history_id(pair_address))
-                if h and h.get("buy_real_price") is not None and token.price_native:
-                    buy_real = float(h["buy_real_price"])        # unitario BNB/token (con fees reales)
-                    take_profit = buy_real * 1.05                # +5%
-                    if float(token.price_native) >= take_profit:
-                        sell_amount_tokens = ...  # define cuánto vendes (100% o un %)
-                        prep = self.autosell.prepare_sell(
-                            pair_address=pair_address,
-                            token_address=token.address,
-                            sell_amount_tokens=sell_amount_tokens,
-                            slippage_percent=float(os.getenv("DEFAULT_SLIPPAGE", "3.0"))
-                        )
-                        if prep.get("ok"):
-                            # approve si hace falta
-                            if prep["approve_tx"] is not None:
-                                self.autobuy.w3s.sign_and_send(prep["approve_tx"])
-                            # enviar y registrar venta real
-                            self.autosell.send_and_record_sell(
-                                pair_address=pair_address,
-                                token_address=token.address,
-                                sell_amount_tokens=sell_amount_tokens,
-                                sell_tx=prep["sell_tx"]
-                            )
-                            break
+                # 1) Recuperar buy_real_price del history (para base de trailing)
+                hid = self.monitor_repo.get_history_id(pair_address)
+                if not hid:
+                    logger.info(f"[{pair_address}] sin history_id; parando hilo.")
+                    break
+
+                h = self.autobuy.history_repo.get_by_id(hid)
+                if not h or h.get("buy_real_price") is None:
+                    # aún no tenemos precio real de compra (quizá no ha llegado el receipt)
+                    stop_evt.wait(self.tick_seconds)
+                    continue
+
+                buy_real = float(h["buy_real_price"])
+                if token.price_native is None:
+                    stop_evt.wait(self.tick_seconds)
+                    continue
+
+                current = float(token.price_native)
+
+                # 2) Actualizar/decidir trailing-stop / stop-loss
+                decision = self._update_trailing(pair_address, current, buy_real)
+                if decision["action"] == "SELL":
+                    # 3) Determinar cantidad a vender
+                    sell_amount_tokens = self._determine_sell_amount(pair_address)
+                    if sell_amount_tokens <= 0:
+                        logger.warning(f"[{pair_address}] cantidad a vender no disponible; skipping sell.")
+                        stop_evt.wait(self.tick_seconds)
+                        continue
+
+                    # 4) Preparar venta
+                    prep = self.autosell.prepare_sell(
+                        pair_address=pair_address,
+                        token_address=token.address,
+                        sell_amount_tokens=sell_amount_tokens,
+                        slippage_percent=DEFAULT_SLIPPAGE
+                    )
+                    if not prep.get("ok"):
+                        logger.warning(f"[{pair_address}] prepare_sell falló: {prep}")
+                        stop_evt.wait(self.tick_seconds)
+                        continue
+
+                    # 5) approve si hace falta
+                    if prep["approve_tx"] is not None:
+                        self.autobuy.w3s.sign_and_send(prep["approve_tx"])
+
+                    # 6) enviar y registrar resultados reales
+                    res = self.autosell.send_and_record_sell(
+                        pair_address=pair_address,
+                        token_address=token.address,
+                        sell_amount_tokens=sell_amount_tokens,
+                        sell_tx=prep["sell_tx"]
+                    )
+                    logger.info(f"[{pair_address}] SELL ({decision['reason']}): {res}")
+                    break  # ciclo de monitorización terminado tras la venta
             except Exception as e:
                 logger.exception(f"[{pair_address}] error en worker: {e}")
 
@@ -272,3 +311,53 @@ class MonitorOrchestrator:
             stop_evt.wait(self.tick_seconds)
 
         logger.info(f"[{pair_address}] monitor detenido")
+
+    # helpers de trailing/stop-loss (añadir a la clase)
+    def _init_trailing(self, pair_address: str, buy_real_price_bnb: float) -> None:
+        """
+        Inicializa estado de trailing para el par.
+        - armed: False hasta que el precio alcance buy_real*(1+TP%)
+        - peak:   último máximo visto tras estar armado
+        - trailing_stop: peak * (1 - gap)
+        - stop_loss: buy_real * (1 - STOP_LOSS_PCT)
+        """
+        self._trail[pair_address] = {
+            "armed": TAKE_PROFIT_PCT <= 0.0,  # si TP=0, armamos desde el inicio
+            "peak":  buy_real_price_bnb,
+            "trailing_stop": buy_real_price_bnb * (1 - TRAILING_GAP_PCT/100.0),
+            "stop_loss":     buy_real_price_bnb * (1 - STOP_LOSS_PCT/100.0),
+        }
+
+    def _update_trailing(self, pair_address: str, current_price_bnb: float, buy_real_price_bnb: float) -> dict:
+        """
+        Actualiza/arma el trailing y decide si vender.
+        Devuelve {"action": "HOLD"|"SELL", "reason": str}
+        """
+        st = self._trail.get(pair_address)
+        if not st:
+            self._init_trailing(pair_address, buy_real_price_bnb)
+            st = self._trail[pair_address]
+
+        # 1) STOP-LOSS duro (siempre activo)
+        if current_price_bnb <= st["stop_loss"]:
+            return {"action": "SELL", "reason": "STOP_LOSS"}
+
+        # 2) Armar trailing al superar el TP
+        if not st["armed"]:
+            arm_level = buy_real_price_bnb * (1 + TAKE_PROFIT_PCT/100.0)
+            if current_price_bnb >= arm_level:
+                st["armed"] = True
+                st["peak"] = current_price_bnb
+                st["trailing_stop"] = current_price_bnb * (1 - TRAILING_GAP_PCT/100.0)
+                return {"action": "HOLD", "reason": "ARMED_TRAILING"}
+
+        # 3) Si armado: actualizar pico y stop; comprobar ruptura
+        if st["armed"]:
+            if current_price_bnb > st["peak"]:
+                st["peak"] = current_price_bnb
+                st["trailing_stop"] = current_price_bnb * (1 - TRAILING_GAP_PCT/100.0)
+                return {"action": "HOLD", "reason": "NEW_PEAK"}
+            if current_price_bnb <= st["trailing_stop"]:
+                return {"action": "SELL", "reason": "TRAILING_HIT"}
+
+        return {"action": "HOLD", "reason": "NONE"}
