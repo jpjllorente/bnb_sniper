@@ -28,29 +28,40 @@ class ActionRepository:
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS acciones(
                     pair_address TEXT PRIMARY KEY,
-                    tipo        TEXT,
-                    estado      TEXT,
-                    timestamp   INTEGER
+                    tipo         TEXT,
+                    estado       TEXT,
+                    timestamp    INTEGER,
+                    notified_at  INTEGER,
+                    token_address TEXT,
+                    motivo       TEXT
                 )
             """)
-            # añadir notified_at si no existe
+            # columnas nuevas si la tabla ya existía
             cols = {r[1] for r in conn.execute("PRAGMA table_info(acciones)").fetchall()}
             if "notified_at" not in cols:
                 conn.execute("ALTER TABLE acciones ADD COLUMN notified_at INTEGER")
+            if "token_address" not in cols:
+                conn.execute("ALTER TABLE acciones ADD COLUMN token_address TEXT")
+            if "motivo" not in cols:
+                conn.execute("ALTER TABLE acciones ADD COLUMN motivo TEXT")
             conn.commit()
 
     @log_function
-    def registrar_accion(self, pair_address: str, tipo: str):
+    def registrar_accion(self, pair_address: str, tipo: str,
+                         token_address: str | None = None,
+                         motivo: str | None = None):
         with self._connect() as conn:
             conn.execute("""
-                INSERT INTO acciones (pair_address, tipo, estado, timestamp, notified_at)
-                VALUES (?, ?, 'pendiente', strftime('%s','now'), NULL)
+                INSERT INTO acciones (pair_address, tipo, estado, timestamp, notified_at, token_address, motivo)
+                VALUES (?, ?, 'pendiente', strftime('%s','now'), NULL, ?, ?)
                 ON CONFLICT(pair_address) DO UPDATE SET
                     tipo=excluded.tipo,
                     estado='pendiente',
                     timestamp=strftime('%s','now'),
-                    notified_at=NULL
-            """, (pair_address, tipo))
+                    notified_at=NULL,
+                    token_address=COALESCE(excluded.token_address, acciones.token_address),
+                    motivo=COALESCE(excluded.motivo, acciones.motivo)
+            """, (pair_address, tipo, token_address, motivo))
             conn.commit()
 
     @log_function
@@ -85,7 +96,7 @@ class ActionRepository:
 
     @log_function
     def list_all(self, estado: str | None = None, limit: int = 50) -> list[dict]:
-        q = "SELECT pair_address,tipo,estado,timestamp,notified_at FROM acciones"
+        q = "SELECT pair_address,tipo,estado,timestamp,notified_at,token_address,motivo FROM acciones"
         p: list = []
         if estado:
             q += " WHERE estado=?"
@@ -101,7 +112,7 @@ class ActionRepository:
     def list_pending_not_notified(self, limit: int = 20) -> list[dict]:
         with self._connect() as conn:
             cur = conn.execute("""
-                SELECT pair_address, tipo, timestamp
+                SELECT pair_address, tipo, timestamp, token_address, motivo
                 FROM acciones
                 WHERE estado='pendiente' AND (notified_at IS NULL)
                 ORDER BY timestamp ASC

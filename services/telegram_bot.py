@@ -1,15 +1,18 @@
-from typing import Optional
 import os
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from utils.log_config import logger_manager, log_function
 from repositories.action_repository import ActionRepository
 from repositories.monitor_repository import MonitorRepository
-from utils.log_config import logger_manager, log_function
+
 
 logger = logger_manager.setup_logger(__name__)
 
+def _esc(s: str) -> str:
+    return (s or "").replace("\\","\\\\").replace("_","\\_").replace("*","\\*").replace("`","\\`").replace("[","\\[").replace("]","\\]")
+
 class TelegramBot:
-    def __init__(self, token: Optional[str] = None) -> None:
+    def __init__(self, token: str | None = None) -> None:
         self.token = token or os.getenv("TELEGRAM_TOKEN")
         if not self.token:
             raise RuntimeError("Falta TELEGRAM_TOKEN")
@@ -18,14 +21,11 @@ class TelegramBot:
         self.monitor = MonitorRepository(os.getenv("DB_PATH"))
 
         self.application = Application.builder().token(self.token).build()
-
-        # Handlers básicos
         self.application.add_handler(CommandHandler("start", self.cmd_start))
         self.application.add_handler(CommandHandler("acciones", self.cmd_acciones))
         self.application.add_handler(CommandHandler("autorizar", self.cmd_autorizar))
         self.application.add_handler(CommandHandler("cancelar", self.cmd_cancelar))
 
-        # 🚀 Push automático de pendientes (si ACTIONS_PUSH_INTERVAL > 0)
         interval = int(os.getenv("ACTIONS_PUSH_INTERVAL", "10"))
         if interval > 0:
             self.application.job_queue.run_repeating(
@@ -42,9 +42,15 @@ class TelegramBot:
             return
         lines = []
         for r in pend:
-            lines.append(f"• {r['pair_address']} — {r['tipo']} (ts {r['timestamp']})")
+            token_url = f"https://bscscan.com/token/{r['token_address']}" if r.get("token_address") else "N/D"
+            motivo = r.get("motivo") or "Sin detalle."
+            lines.append(
+                f"• `{r['pair_address']}` — {r['tipo']}\n"
+                f"  Motivo: {_esc(motivo)}\n"
+                f"  BscScan: {token_url}"
+            )
         lines.append("\nUsa: /autorizar <pair>  |  /cancelar <pair>")
-        await update.message.reply_text("\n".join(lines))
+        await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def cmd_autorizar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
@@ -53,9 +59,7 @@ class TelegramBot:
         pair = context.args[0]
         self.actions.autorizar_accion(pair)
         await update.message.reply_text(f"✅ Aprobada: `{pair}`\nSe envía al pipeline.", parse_mode="Markdown")
-
-        # En DRY_RUN avisamos explícitamente que simulamos la compra (el pipeline debería recoger 'aprobada')
-        if (os.getenv("DRY_RUN", "").lower() in ("true", "1", "yes")):
+        if (os.getenv("DRY_RUN", "").lower() in ("true","1","yes")):
             await update.message.reply_text(
                 f"🧪 DRY-RUN: simulación de *orden de compra* para `{pair}` enviada.",
                 parse_mode="Markdown"
@@ -70,7 +74,6 @@ class TelegramBot:
         await update.message.reply_text(f"🛑 Cancelada: `{pair}`", parse_mode="Markdown")
 
     async def _push_pending_actions(self, context: ContextTypes.DEFAULT_TYPE):
-        """Escanea acciones 'pendiente' sin notificar y las envía 1 sola vez."""
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
         if not chat_id:
             logger.warning("TELEGRAM_CHAT_ID no definido; no puedo enviar push.")
@@ -78,20 +81,19 @@ class TelegramBot:
         try:
             rows = self.actions.list_pending_not_notified(limit=20)
             for r in rows:
+                token_url = f"https://bscscan.com/token/{r['token_address']}" if r.get("token_address") else "N/D"
+                motivo = r.get("motivo") or "Sin detalle."
                 msg = (
                     "⚠️ *Acción pendiente*\n"
                     f"*Pair:* `{r['pair_address']}`\n"
-                    f"*Tipo:* {r['tipo']}\n\n"
-                    f"Comandos:\n"
+                    f"*Tipo:* {r['tipo']}\n"
+                    f"*Motivo:* {_esc(motivo)}\n"
+                    f"*BscScan:* {token_url}\n\n"
+                    f"*Comandos:*\n"
                     f"/autorizar {r['pair_address']}\n"
                     f"/cancelar {r['pair_address']}"
                 )
-                await context.bot.send_message(
-                    chat_id=int(chat_id),
-                    text=msg,
-                    parse_mode="Markdown"
-                )
-                # marcar como notificada para no reenviar
+                await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode="Markdown")
                 self.actions.marcar_notificado(r["pair_address"])
         except Exception as e:
             logger.exception(f"[push_pending_actions] error: {e}")
