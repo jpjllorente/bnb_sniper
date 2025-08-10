@@ -125,7 +125,8 @@ class MonitorOrchestrator:
         """
         for pair in self._list_action_pairs_safe():
             estado = self.action_repo.obtener_estado(pair)
-            if estado == "aprobada":
+            tipo = self.action_repo.obtener_tipo(pair)
+            if estado == "aprobada" and tipo == "compra":
                 self._handle_authorized(pair)
             elif estado == "cancelada":
                 self._handle_canceled(pair)
