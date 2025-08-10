@@ -3,7 +3,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 import os, functools, time
 
-_DEFAULT_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+_DEFAULT_LEVEL = os.getenv("LOG_LEVEL", "DEBUG").upper()
 _LOG_FILE = os.getenv("LOG_FILE", "./logs/app.log")
 _MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", "1048576"))
 _BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "3"))

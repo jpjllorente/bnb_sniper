@@ -1,197 +1,92 @@
-# services/telegram_bot.py  (python-telegram-bot v20+)
-from __future__ import annotations
-import os
 from typing import Optional
-
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, ContextTypes
-)
-
-from controllers.telegram_controller import TelegramController
+import os
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+from utils.log_config import logger
 from repositories.action_repository import ActionRepository
 from repositories.monitor_repository import MonitorRepository
-from utils.log_config import logger_manager
-
-logger = logger_manager.setup_logger(__name__)
 
 class TelegramBot:
-    """
-    Bot v20+: Application + async handlers.
-    Exponer:
-      - run_polling()  -> bloquea el hilo actual
-      - stop_running() -> parar desde fuera
-    """
     def __init__(self, token: Optional[str] = None) -> None:
         self.token = token or os.getenv("TELEGRAM_TOKEN")
         if not self.token:
             raise RuntimeError("Falta TELEGRAM_TOKEN")
 
-        self.controller = TelegramController()
-        self.actions = ActionRepository()
-        self.monitor = MonitorRepository()
+        self.actions = ActionRepository(os.getenv("DB_PATH"))
+        self.monitor = MonitorRepository(os.getenv("DB_PATH"))
 
         self.application = Application.builder().token(self.token).build()
 
-        self.application.add_handler(CommandHandler("start", self.handle_start))
-        self.application.add_handler(CommandHandler("estado", self.handle_estado))
-        self.application.add_handler(CommandHandler("acciones", self.handle_acciones))
-        self.application.add_handler(CommandHandler("monitoreo", self.handle_monitoreo))
-        self.application.add_handler(CommandHandler("comprar", self.handle_comprar))
-        self.application.add_handler(CommandHandler("vender", self.handle_vender))
-        self.application.add_handler(CommandHandler("cancelar", self.handle_cancelar))
-        self.application.add_handler(CallbackQueryHandler(self.handle_callback))
+        # handlers existentes...
+        self.application.add_handler(CommandHandler("start", self.cmd_start))
+        self.application.add_handler(CommandHandler("acciones", self.cmd_acciones))
+        self.application.add_handler(CommandHandler("autorizar", self.cmd_autorizar))
+        self.application.add_handler(CommandHandler("cancelar", self.cmd_cancelar))
 
-    # ---------- utils ----------
-    def _pair_from_args(self, args: list[str]) -> Optional[str]:
-        if len(args) != 1:
-            return None
-        return args[0].strip()
-
-    # ---------- commands ----------
-    async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(
-            "🤖 Bot activo.\n"
-            "Comandos:\n"
-            "  /acciones  → ver acciones pendientes y gestionar\n"
-            "  /monitoreo → ver tokens monitorizados\n"
-            "  /estado <pair>\n"
-            "  /comprar <pair>\n"
-            "  /vender <pair>\n"
-            "  /cancelar <pair>"
-        )
-
-    async def handle_estado(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        pair = self._pair_from_args(context.args)
-        if not pair:
-            await update.message.reply_text("⚠️ Uso: /estado <pair_address>")
-            return
-        estado = self.controller.obtener_estado(pair) or "sin registro"
-        tipo   = self.controller.obtener_tipo(pair) or "-"
-        await update.message.reply_text(f"ℹ️ {pair}\nTipo: {tipo}\nEstado: {estado}")
-
-    async def handle_acciones(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        rows = self.actions.list_all(estado="pendiente", limit=50)
-        if not rows:
-            await update.message.reply_text("✅ No hay acciones pendientes.")
-            return
-        for r in rows:
-            pair = r["pair_address"]; tipo = r["tipo"]; estado = r["estado"]
-            kb = InlineKeyboardMarkup([[  # botones inline
-                InlineKeyboardButton("✅ Autorizar", callback_data=f"act|approve|{pair}"),
-                InlineKeyboardButton("🚫 Cancelar",  callback_data=f"act|cancel|{pair}")
-            ]])
-            await update.message.reply_text(
-                f"⏳ *Pendiente*: {tipo}\n`{pair}`\nEstado: {estado}",
-                parse_mode="Markdown", reply_markup=kb
+        # 🚀 Push automático de pendientes
+        interval = int(os.getenv("ACTIONS_PUSH_INTERVAL", "10"))
+        if interval > 0:
+            self.application.job_queue.run_repeating(
+                self._push_pending_actions, interval=interval, first=3, name="push_acciones"
             )
 
-    async def handle_monitoreo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        rows = self.monitor.list_monitored(limit=30)
-        if not rows:
-            await update.message.reply_text("ℹ️ No hay tokens en monitorización.")
-            return
-        for r in rows:
-            pair = r["pair_address"]; sym = r.get("symbol") or "-"
-            price = r.get("price"); pnl = r.get("pnl")
-            price_txt = f"{price:.8f} BNB" if isinstance(price, (int, float)) else "N/D"
-            pnl_txt = f"{pnl:+.2f}%" if isinstance(pnl, (int, float)) else "N/D"
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔎 Estado", callback_data=f"mon|state|{pair}")]])
-            await update.message.reply_text(
-                f"📈 {sym} — `{pair}`\n"
-                f"Precio: {price_txt} | PnL: {pnl_txt}",
-                parse_mode="Markdown", reply_markup=kb
-            )
+    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await update.message.reply_text("Bot listo. Usa /acciones para ver pendientes.")
 
-    async def handle_comprar(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        pair = self._pair_from_args(context.args)
-        if not pair:
-            await update.message.reply_text("⚠️ Uso: /comprar <pair>")
+    async def cmd_acciones(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        pend = self.actions.list_all(estado="pendiente", limit=50)
+        if not pend:
+            await update.message.reply_text("No hay acciones pendientes.")
             return
-        estado = self.controller.obtener_estado(pair); tipo = self.controller.obtener_tipo(pair)
-        if estado != "pendiente" or tipo != "compra":
-            await update.message.reply_text(f"⚠️ No hay COMPRA pendiente para `{pair}`.", parse_mode="Markdown"); return
-        self.controller.autorizar_accion(pair)
-        await update.message.reply_text(f"✅ Compra autorizada para `{pair}`", parse_mode="Markdown")
+        lines = []
+        for r in pend:
+            lines.append(f"• {r['pair_address']} — {r['tipo']} (ts {r['timestamp']})")
+        lines.append("\nUsa: /autorizar <pair>  |  /cancelar <pair>")
+        await update.message.reply_text("\n".join(lines))
 
-    async def handle_vender(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        pair = self._pair_from_args(context.args)
-        if not pair:
-            await update.message.reply_text("⚠️ Uso: /vender <pair>")
+    async def cmd_autorizar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not context.args:
+            await update.message.reply_text("Uso: /autorizar <pair_address>")
             return
-        estado = self.controller.obtener_estado(pair); tipo = self.controller.obtener_tipo(pair)
-        if estado != "pendiente" or tipo != "venta":
-            await update.message.reply_text(f"⚠️ No hay VENTA pendiente para `{pair}`.", parse_mode="Markdown"); return
-        self.controller.autorizar_accion(pair)
-        await update.message.reply_text(f"✅ Venta autorizada para `{pair}`", parse_mode="Markdown")
+        pair = context.args[0]
+        self.actions.autorizar_accion(pair)
+        await update.message.reply_text(f"✅ Aprobada: {pair}")
 
-    async def handle_cancelar(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        pair = self._pair_from_args(context.args)
-        if not pair:
-            await update.message.reply_text("⚠️ Uso: /cancelar <pair>")
+    async def cmd_cancelar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if not context.args:
+            await update.message.reply_text("Uso: /cancelar <pair_address>")
             return
-        if self.controller.obtener_estado(pair) is None:
-            await update.message.reply_text(f"⚠️ No hay acción registrada para `{pair}`.", parse_mode="Markdown"); return
-        self.controller.cancelar_accion(pair)
-        await update.message.reply_text(f"🚫 Acción cancelada para `{pair}`", parse_mode="Markdown")
+        pair = context.args[0]
+        self.actions.cancelar_accion(pair)
+        await update.message.reply_text(f"🛑 Cancelada: {pair}")
 
-    # ---------- callbacks ----------
-    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        q = update.callback_query
-        if not q or not q.data:
+    async def _push_pending_actions(self, context: ContextTypes.DEFAULT_TYPE):
+        """Escanea acciones pendientes sin notificar y las envía 1 sola vez."""
+        chat_id = os.getenv("TELEGRAM_CHAT_ID")
+        if not chat_id:
+            logger.warning("TELEGRAM_CHAT_ID no definido; no puedo enviar push.")
             return
         try:
-            kind, action, pair = q.data.split("|", 2)
-        except ValueError:
-            await q.answer("Formato de callback desconocido.")
-            return
-
-        if kind == "act":
-            if action == "approve":
-                est = self.controller.obtener_estado(pair); tipo = self.controller.obtener_tipo(pair)
-                if est == "pendiente":
-                    self.controller.autorizar_accion(pair)
-                    await q.edit_message_text(f"✅ {tipo.capitalize()} autorizada para `{pair}`", parse_mode="Markdown")
-                else:
-                    await q.answer("No está en pendiente.")
-            elif action == "cancel":
-                est = self.controller.obtener_estado(pair)
-                if est is not None:
-                    self.controller.cancelar_accion(pair)
-                    await q.edit_message_text(f"🚫 Acción cancelada para `{pair}`", parse_mode="Markdown")
-                else:
-                    await q.answer("No existe acción para ese par.")
-
-        elif kind == "mon" and action == "state":
-            row = next((r for r in self.monitor.list_monitored(limit=100) if r["pair_address"] == pair), None)
-            if not row:
-                await q.answer("No encontrado.")
-                return
-            sym = row.get("symbol") or "-"
-            price = row.get("price"); pnl = row.get("pnl")
-            entry = row.get("entry_price"); bpf = row.get("buy_price_with_fees")
-            price_txt = f"{price:.8f} BNB" if isinstance(price, (int, float)) else "N/D"
-            pnl_txt = f"{pnl:+.2f}%" if isinstance(pnl, (int, float)) else "N/D"
-            entry_txt = f"{entry:.8f}" if isinstance(entry, (int, float)) else "N/D"
-            bpf_txt   = f"{bpf:.8f}" if isinstance(bpf, (int, float)) else "N/D"
-            await q.answer()
-            await q.edit_message_text(
-                f"🔎 *Estado*\n"
-                f"{sym} — `{pair}`\n"
-                f"Precio: {price_txt}\n"
-                f"Entry: {entry_txt} | Con fees: {bpf_txt}\n"
-                f"PnL: {pnl_txt}",
-                parse_mode="Markdown"
-            )
-
-    # ---------- ciclo de vida ----------
-    def run_polling(self) -> None:
-        logger.info("🤖 Bot de Telegram iniciado (v20+).")
-        self.application.run_polling()
-
-    def stop_running(self) -> None:
-        # usable desde hilos externos
-        try:
-            self.application.stop_running()
+            rows = self.actions.list_pending_not_notified(limit=20)
+            for r in rows:
+                msg = (
+                    "⚠️ *Acción pendiente*\n"
+                    f"*Pair:* `{r['pair_address']}`\n"
+                    f"*Tipo:* {r['tipo']}\n\n"
+                    f"Comandos:\n"
+                    f"/autorizar {r['pair_address']}\n"
+                    f"/cancelar {r['pair_address']}"
+                )
+                await context.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=msg,
+                    parse_mode="Markdown"
+                )
+                # marcar como notificada para no reenviar
+                self.actions.marcar_notificado(r["pair_address"])
         except Exception as e:
-            logger.error(f"Error al parar TelegramBot: {e}")
+            logger.exception(f"[push_pending_actions] error: {e}")
+
+    def run(self):
+        logger.info("TelegramBot iniciando...")
+        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
