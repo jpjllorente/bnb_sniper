@@ -6,7 +6,6 @@ from utils.log_config import logger_manager, log_function
 
 logger = logger_manager.setup_logger(__name__)
 
-
 class TelegramBot:
     def __init__(self, token: str | None = None):
         self.token = token or os.getenv("TELEGRAM_TOKEN")
@@ -18,18 +17,34 @@ class TelegramBot:
         self.dispatcher = self.updater.dispatcher
 
         self.dispatcher.add_handler(CommandHandler("start", self.handle_start))
+        self.dispatcher.add_handler(CommandHandler("estado", self.handle_estado))
         self.dispatcher.add_handler(CommandHandler("comprar", self.handle_comprar))
         self.dispatcher.add_handler(CommandHandler("vender", self.handle_vender))
         self.dispatcher.add_handler(CommandHandler("cancelar", self.handle_cancelar))
 
     def handle_start(self, update: Update, context: CallbackContext) -> None:
-        update.message.reply_text("🤖 Bot activo. Usa /comprar, /vender o /cancelar <pair_address>.")
+        update.message.reply_text(
+            "🤖 Bot activo.\n"
+            "Comandos:\n"
+            "  /estado <pair>\n"
+            "  /comprar <pair>\n"
+            "  /vender <pair>\n"
+            "  /cancelar <pair>"
+        )
 
     def _extraer_pair_address(self, update: Update, context: CallbackContext) -> str | None:
         if len(context.args) != 1:
             update.message.reply_text("⚠️ Uso correcto: /comando <pair_address>")
             return None
-        return context.args[0]
+        return context.args[0].strip()
+
+    def handle_estado(self, update: Update, context: CallbackContext) -> None:
+        pair = self._extraer_pair_address(update, context)
+        if not pair:
+            return
+        estado = self.controller.obtener_estado(pair) or "sin registro"
+        tipo = self.controller.obtener_tipo(pair) or "-"
+        update.message.reply_text(f"ℹ️ {pair}\nTipo: {tipo}\nEstado: {estado}")
 
     def handle_comprar(self, update: Update, context: CallbackContext) -> None:
         pair = self._extraer_pair_address(update, context)
@@ -37,8 +52,9 @@ class TelegramBot:
             return
 
         estado = self.controller.obtener_estado(pair)
-        if not estado:
-            update.message.reply_text(f"⚠️ No hay solicitud de COMPRA pendiente para {pair}")
+        tipo   = self.controller.obtener_tipo(pair)
+        if estado != "pendiente" or tipo != "compra":
+            update.message.reply_text(f"⚠️ No hay *COMPRA pendiente* para {pair}. (estado={estado or '-'}, tipo={tipo or '-'})", parse_mode="Markdown")
             return
 
         self.controller.autorizar_accion(pair)
@@ -51,8 +67,9 @@ class TelegramBot:
             return
 
         estado = self.controller.obtener_estado(pair)
-        if not estado:
-            update.message.reply_text(f"⚠️ No hay solicitud de VENTA pendiente para {pair}")
+        tipo   = self.controller.obtener_tipo(pair)
+        if estado != "pendiente" or tipo != "venta":
+            update.message.reply_text(f"⚠️ No hay *VENTA pendiente* para {pair}. (estado={estado or '-'}, tipo={tipo or '-'})", parse_mode="Markdown")
             return
 
         self.controller.autorizar_accion(pair)
@@ -65,8 +82,8 @@ class TelegramBot:
             return
 
         estado = self.controller.obtener_estado(pair)
-        if not estado:
-            update.message.reply_text(f"⚠️ No hay ninguna acción pendiente para {pair}")
+        if estado is None:
+            update.message.reply_text(f"⚠️ No hay ninguna acción registrada para {pair}")
             return
 
         self.controller.cancelar_accion(pair)
