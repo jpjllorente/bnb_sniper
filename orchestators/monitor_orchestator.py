@@ -22,6 +22,9 @@ TRAILING_GAP_PCT = float(os.getenv("TRAILING_GAP_PCT", "3.0"))
 STOP_LOSS_PCT    = float(os.getenv("STOP_LOSS_PCT",    "7.0"))
 DEFAULT_SLIPPAGE = float(os.getenv("DEFAULT_SLIPPAGE", "3.0"))
 SELL_PERCENT     = float(os.getenv("SELL_PERCENT",     "1.0"))  # 1.0 = 100%
+MIN_SELL_TOKENS    = float(os.getenv("MIN_SELL_TOKENS", "0.0"))   # umbral mínimo de unidades a vender
+MIN_SELL_VALUE_BNB = float(os.getenv("MIN_SELL_VALUE_BNB", "0.0"))# umbral mínimo de valor en BNB
+
 
 logger = logger_manager.setup_logger(__name__)
 
@@ -273,7 +276,7 @@ class MonitorOrchestrator:
                 decision = self._update_trailing(pair_address, current, buy_real)
                 if decision["action"] == "SELL":
                     # 3) Determinar cantidad a vender
-                    sell_amount_tokens = self._determine_sell_amount(pair_address)
+                    sell_amount_tokens = self._determine_sell_amount(pair_address, token.address, current)
                     if sell_amount_tokens <= 0:
                         logger.warning(f"[{pair_address}] cantidad a vender no disponible; skipping sell.")
                         stop_evt.wait(self.tick_seconds)
@@ -361,3 +364,28 @@ class MonitorOrchestrator:
                 return {"action": "SELL", "reason": "TRAILING_HIT"}
 
         return {"action": "HOLD", "reason": "NONE"}
+
+    def _determine_sell_amount(self, pair_address: str, token_address: str, current_price_bnb: float) -> float:
+        """
+        Lee on‑chain el balance del token en la wallet y devuelve la cantidad a vender (tokens).
+        Aplica:
+        - SELL_PERCENT (porcentaje del balance)
+        - MIN_SELL_TOKENS (umbral mínimo de unidades)
+        - MIN_SELL_VALUE_BNB (umbral mínimo de valor de la orden)
+        """
+        balance_tokens = self.autobuy.w3s.token_balance_tokens(token_address)
+        if balance_tokens <= 0:
+            return 0.0
+
+        amount_tokens = balance_tokens * SELL_PERCENT
+
+        # Filtro por unidades mínimas
+        if amount_tokens < MIN_SELL_TOKENS:
+            return 0.0
+
+        # Filtro por valor mínimo en BNB
+        est_value_bnb = amount_tokens * max(current_price_bnb, 0.0)
+        if est_value_bnb < MIN_SELL_VALUE_BNB:
+            return 0.0
+
+        return float(amount_tokens)
