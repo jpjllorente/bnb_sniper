@@ -1,6 +1,7 @@
+# services/telegram_service.py
+from __future__ import annotations
 import os
-from telegram import Bot
-from telegram.error import TelegramError
+import requests
 from models.token import Token
 from controllers.telegram_controller import TelegramController
 from utils.log_config import logger_manager, log_function
@@ -9,14 +10,25 @@ logger = logger_manager.setup_logger(__name__)
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+API_BASE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}" if TELEGRAM_TOKEN else None
 
 class TelegramService:
     def __init__(self):
         if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
             raise RuntimeError("Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en el entorno")
-        self.bot = Bot(token=TELEGRAM_TOKEN)
         self.chat_id = TELEGRAM_CHAT_ID
         self.controller = TelegramController()
+
+    def _send_markdown(self, text: str) -> None:
+        try:
+            r = requests.post(f"{API_BASE}/sendMessage", json={
+                "chat_id": self.chat_id,
+                "text": text,
+                "parse_mode": "Markdown"
+            }, timeout=10)
+            r.raise_for_status()
+        except Exception as e:
+            logger.error(f"❌ Error al enviar mensaje a Telegram: {e}")
 
     @log_function
     def solicitar_accion(self, tipo: str, token: Token, contexto: str) -> None:
@@ -47,22 +59,20 @@ class TelegramService:
         )
 
         try:
-            self.bot.send_message(chat_id=self.chat_id, text=mensaje, parse_mode="Markdown")
-            # Solo si enviamos bien, registramos la acción
+            r = requests.post(f"{API_BASE}/sendMessage", json={
+                "chat_id": self.chat_id,
+                "text": mensaje,
+                "parse_mode": "Markdown"
+            }, timeout=10)
+            r.raise_for_status()
             self.controller.registrar_accion(token, tipo_limpio)
-        except TelegramError as e:
+        except Exception as e:
             logger.error(f"❌ Error al enviar solicitud de {tipo}: {e}")
 
     @log_function
     def notificar_info(self, mensaje: str) -> None:
-        try:
-            self.bot.send_message(chat_id=self.chat_id, text=f"ℹ️ {mensaje}")
-        except TelegramError as e:
-            logger.error(f"❌ Error al enviar notificación info: {e}")
+        self._send_markdown(f"ℹ️ {mensaje}")
 
     @log_function
     def notificar_error(self, mensaje: str) -> None:
-        try:
-            self.bot.send_message(chat_id=self.chat_id, text=f"🚨 *ERROR*: {mensaje}", parse_mode="Markdown")
-        except TelegramError as e:
-            logger.error(f"❌ Error al enviar notificación de error: {e}")
+        self._send_markdown(f"🚨 *ERROR*: {mensaje}")

@@ -60,8 +60,7 @@ def start_orchestrator(stop_event: threading.Event):
 
 def start_telegram_bot(stop_event: threading.Event):
     """
-    Arranca el bot de Telegram en un hilo.
-    Internamente, TelegramBot.start() bloquea con idle(); al apagar, forzamos .updater.stop()
+    Arranca el bot v20 en un hilo; run_polling() bloquea ese hilo.
     """
     try:
         bot = TelegramBot()
@@ -69,25 +68,25 @@ def start_telegram_bot(stop_event: threading.Event):
         logger.error(f"No se pudo iniciar TelegramBot: {e}")
         return
     start_telegram_bot.instance = bot  # type: ignore[attr-defined]
-    # lo lanzamos en un hilo aparte para poder detener el proceso principal con señales
+
     def _run():
         try:
-            bot.start()
+            bot.run_polling()
         except Exception as e:
             logger.error(f"Fallo en TelegramBot: {e}")
+
     t = threading.Thread(target=_run, name="TelegramBot", daemon=True)
     t.start()
-    # esperar señal de parada
+
     while not stop_event.is_set():
         time.sleep(0.5)
+
     # parada suave
     try:
-        # el bot expone updater; podemos parar el polling
-        if hasattr(bot, "updater"):
-            bot.updater.stop()
+        bot.stop_running()
     except Exception as e:
         logger.error(f"Error al parar TelegramBot: {e}")
-
+        
 def start_streamlit_process() -> subprocess.Popen:
     """
     Lanza streamlit como proceso aparte.

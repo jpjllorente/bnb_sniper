@@ -1,7 +1,13 @@
-# services/telegram_bot.py
+# services/telegram_bot.py  (python-telegram-bot v20+)
+from __future__ import annotations
 import os
-from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, CallbackContext
+from typing import Optional
+
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler, ContextTypes
+)
+
 from controllers.telegram_controller import TelegramController
 from repositories.action_repository import ActionRepository
 from repositories.monitor_repository import MonitorRepository
@@ -10,7 +16,13 @@ from utils.log_config import logger_manager
 logger = logger_manager.setup_logger(__name__)
 
 class TelegramBot:
-    def __init__(self, token: str | None = None):
+    """
+    Bot v20+: Application + async handlers.
+    Exponer:
+      - run_polling()  -> bloquea el hilo actual
+      - stop_running() -> parar desde fuera
+    """
+    def __init__(self, token: Optional[str] = None) -> None:
         self.token = token or os.getenv("TELEGRAM_TOKEN")
         if not self.token:
             raise RuntimeError("Falta TELEGRAM_TOKEN")
@@ -19,20 +31,26 @@ class TelegramBot:
         self.actions = ActionRepository()
         self.monitor = MonitorRepository()
 
-        self.updater = Updater(token=self.token, use_context=True)
-        dp = self.updater.dispatcher
+        self.application = Application.builder().token(self.token).build()
 
-        dp.add_handler(CommandHandler("start", self.handle_start))
-        dp.add_handler(CommandHandler("estado", self.handle_estado))
-        dp.add_handler(CommandHandler("acciones", self.handle_acciones))
-        dp.add_handler(CommandHandler("monitoreo", self.handle_monitoreo))
-        dp.add_handler(CommandHandler("comprar", self.handle_comprar))
-        dp.add_handler(CommandHandler("vender", self.handle_vender))
-        dp.add_handler(CommandHandler("cancelar", self.handle_cancelar))
-        dp.add_handler(CallbackQueryHandler(self.handle_callback))
+        self.application.add_handler(CommandHandler("start", self.handle_start))
+        self.application.add_handler(CommandHandler("estado", self.handle_estado))
+        self.application.add_handler(CommandHandler("acciones", self.handle_acciones))
+        self.application.add_handler(CommandHandler("monitoreo", self.handle_monitoreo))
+        self.application.add_handler(CommandHandler("comprar", self.handle_comprar))
+        self.application.add_handler(CommandHandler("vender", self.handle_vender))
+        self.application.add_handler(CommandHandler("cancelar", self.handle_cancelar))
+        self.application.add_handler(CallbackQueryHandler(self.handle_callback))
 
-    def handle_start(self, update: Update, _: CallbackContext) -> None:
-        update.message.reply_text(
+    # ---------- utils ----------
+    def _pair_from_args(self, args: list[str]) -> Optional[str]:
+        if len(args) != 1:
+            return None
+        return args[0].strip()
+
+    # ---------- commands ----------
+    async def handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await update.message.reply_text(
             "🤖 Bot activo.\n"
             "Comandos:\n"
             "  /acciones  → ver acciones pendientes y gestionar\n"
@@ -43,26 +61,19 @@ class TelegramBot:
             "  /cancelar <pair>"
         )
 
-    def _pair_arg(self, update: Update, context: CallbackContext):
-        if len(context.args) != 1:
-            update.message.reply_text("⚠️ Uso: /comando <pair_address>")
-            return None
-        return context.args[0].strip()
-
-    # Estado individual
-    def handle_estado(self, update: Update, context: CallbackContext) -> None:
-        pair = self._pair_arg(update, context)
+    async def handle_estado(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        pair = self._pair_from_args(context.args)
         if not pair:
+            await update.message.reply_text("⚠️ Uso: /estado <pair_address>")
             return
         estado = self.controller.obtener_estado(pair) or "sin registro"
         tipo   = self.controller.obtener_tipo(pair) or "-"
-        update.message.reply_text(f"ℹ️ {pair}\nTipo: {tipo}\nEstado: {estado}")
+        await update.message.reply_text(f"ℹ️ {pair}\nTipo: {tipo}\nEstado: {estado}")
 
-    # Acciones pendientes
-    def handle_acciones(self, update: Update, _: CallbackContext) -> None:
+    async def handle_acciones(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         rows = self.actions.list_all(estado="pendiente", limit=50)
         if not rows:
-            update.message.reply_text("✅ No hay acciones pendientes.")
+            await update.message.reply_text("✅ No hay acciones pendientes.")
             return
         for r in rows:
             pair = r["pair_address"]; tipo = r["tipo"]; estado = r["estado"]
@@ -70,16 +81,15 @@ class TelegramBot:
                 InlineKeyboardButton("✅ Autorizar", callback_data=f"act|approve|{pair}"),
                 InlineKeyboardButton("🚫 Cancelar",  callback_data=f"act|cancel|{pair}")
             ]])
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"⏳ *Pendiente*: {tipo}\n`{pair}`\nEstado: {estado}",
                 parse_mode="Markdown", reply_markup=kb
             )
 
-    # Monitoreo (snapshot de monitor_state)
-    def handle_monitoreo(self, update: Update, _: CallbackContext) -> None:
+    async def handle_monitoreo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         rows = self.monitor.list_monitored(limit=30)
         if not rows:
-            update.message.reply_text("ℹ️ No hay tokens en monitorización.")
+            await update.message.reply_text("ℹ️ No hay tokens en monitorización.")
             return
         for r in rows:
             pair = r["pair_address"]; sym = r.get("symbol") or "-"
@@ -87,69 +97,76 @@ class TelegramBot:
             price_txt = f"{price:.8f} BNB" if isinstance(price, (int, float)) else "N/D"
             pnl_txt = f"{pnl:+.2f}%" if isinstance(pnl, (int, float)) else "N/D"
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🔎 Estado", callback_data=f"mon|state|{pair}")]])
-            update.message.reply_text(
+            await update.message.reply_text(
                 f"📈 {sym} — `{pair}`\n"
                 f"Precio: {price_txt} | PnL: {pnl_txt}",
                 parse_mode="Markdown", reply_markup=kb
             )
 
-    # Autorizaciones directas por comando
-    def handle_comprar(self, update: Update, context: CallbackContext) -> None:
-        pair = self._pair_arg(update, context)
-        if not pair: return
+    async def handle_comprar(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        pair = self._pair_from_args(context.args)
+        if not pair:
+            await update.message.reply_text("⚠️ Uso: /comprar <pair>")
+            return
         estado = self.controller.obtener_estado(pair); tipo = self.controller.obtener_tipo(pair)
         if estado != "pendiente" or tipo != "compra":
-            update.message.reply_text(f"⚠️ No hay COMPRA pendiente para `{pair}`.", parse_mode="Markdown"); return
+            await update.message.reply_text(f"⚠️ No hay COMPRA pendiente para `{pair}`.", parse_mode="Markdown"); return
         self.controller.autorizar_accion(pair)
-        update.message.reply_text(f"✅ Compra autorizada para `{pair}`", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Compra autorizada para `{pair}`", parse_mode="Markdown")
 
-    def handle_vender(self, update: Update, context: CallbackContext) -> None:
-        pair = self._pair_arg(update, context)
-        if not pair: return
+    async def handle_vender(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        pair = self._pair_from_args(context.args)
+        if not pair:
+            await update.message.reply_text("⚠️ Uso: /vender <pair>")
+            return
         estado = self.controller.obtener_estado(pair); tipo = self.controller.obtener_tipo(pair)
         if estado != "pendiente" or tipo != "venta":
-            update.message.reply_text(f"⚠️ No hay VENTA pendiente para `{pair}`.", parse_mode="Markdown"); return
+            await update.message.reply_text(f"⚠️ No hay VENTA pendiente para `{pair}`.", parse_mode="Markdown"); return
         self.controller.autorizar_accion(pair)
-        update.message.reply_text(f"✅ Venta autorizada para `{pair}`", parse_mode="Markdown")
+        await update.message.reply_text(f"✅ Venta autorizada para `{pair}`", parse_mode="Markdown")
 
-    def handle_cancelar(self, update: Update, context: CallbackContext) -> None:
-        pair = self._pair_arg(update, context)
-        if not pair: return
+    async def handle_cancelar(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        pair = self._pair_from_args(context.args)
+        if not pair:
+            await update.message.reply_text("⚠️ Uso: /cancelar <pair>")
+            return
         if self.controller.obtener_estado(pair) is None:
-            update.message.reply_text(f"⚠️ No hay acción registrada para `{pair}`.", parse_mode="Markdown"); return
+            await update.message.reply_text(f"⚠️ No hay acción registrada para `{pair}`.", parse_mode="Markdown"); return
         self.controller.cancelar_accion(pair)
-        update.message.reply_text(f"🚫 Acción cancelada para `{pair}`", parse_mode="Markdown")
+        await update.message.reply_text(f"🚫 Acción cancelada para `{pair}`", parse_mode="Markdown")
 
-    # Callbacks de botones inline
-    def handle_callback(self, update: Update, context: CallbackContext) -> None:
+    # ---------- callbacks ----------
+    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         q = update.callback_query
         if not q or not q.data:
             return
         try:
             kind, action, pair = q.data.split("|", 2)
         except ValueError:
-            q.answer("Formato de callback desconocido."); return
+            await q.answer("Formato de callback desconocido.")
+            return
 
         if kind == "act":
             if action == "approve":
                 est = self.controller.obtener_estado(pair); tipo = self.controller.obtener_tipo(pair)
                 if est == "pendiente":
                     self.controller.autorizar_accion(pair)
-                    q.edit_message_text(f"✅ {tipo.capitalize()} autorizada para `{pair}`", parse_mode="Markdown")
+                    await q.edit_message_text(f"✅ {tipo.capitalize()} autorizada para `{pair}`", parse_mode="Markdown")
                 else:
-                    q.answer("No está en pendiente.")
+                    await q.answer("No está en pendiente.")
             elif action == "cancel":
                 est = self.controller.obtener_estado(pair)
                 if est is not None:
                     self.controller.cancelar_accion(pair)
-                    q.edit_message_text(f"🚫 Acción cancelada para `{pair}`", parse_mode="Markdown")
+                    await q.edit_message_text(f"🚫 Acción cancelada para `{pair}`", parse_mode="Markdown")
                 else:
-                    q.answer("No existe acción para ese par.")
+                    await q.answer("No existe acción para ese par.")
 
         elif kind == "mon" and action == "state":
             row = next((r for r in self.monitor.list_monitored(limit=100) if r["pair_address"] == pair), None)
             if not row:
-                q.answer("No encontrado."); return
+                await q.answer("No encontrado.")
+                return
             sym = row.get("symbol") or "-"
             price = row.get("price"); pnl = row.get("pnl")
             entry = row.get("entry_price"); bpf = row.get("buy_price_with_fees")
@@ -157,8 +174,8 @@ class TelegramBot:
             pnl_txt = f"{pnl:+.2f}%" if isinstance(pnl, (int, float)) else "N/D"
             entry_txt = f"{entry:.8f}" if isinstance(entry, (int, float)) else "N/D"
             bpf_txt   = f"{bpf:.8f}" if isinstance(bpf, (int, float)) else "N/D"
-            q.answer()
-            q.edit_message_text(
+            await q.answer()
+            await q.edit_message_text(
                 f"🔎 *Estado*\n"
                 f"{sym} — `{pair}`\n"
                 f"Precio: {price_txt}\n"
@@ -167,7 +184,14 @@ class TelegramBot:
                 parse_mode="Markdown"
             )
 
-    def start(self):
-        logger.info("🤖 Bot de Telegram iniciado.")
-        self.updater.start_polling()
-        self.updater.idle()
+    # ---------- ciclo de vida ----------
+    def run_polling(self) -> None:
+        logger.info("🤖 Bot de Telegram iniciado (v20+).")
+        self.application.run_polling()
+
+    def stop_running(self) -> None:
+        # usable desde hilos externos
+        try:
+            self.application.stop_running()
+        except Exception as e:
+            logger.error(f"Error al parar TelegramBot: {e}")
