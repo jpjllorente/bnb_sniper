@@ -1,8 +1,9 @@
 # controllers/discovery_controller.py
 from __future__ import annotations
+import os
 from typing import List
 from models.token import Token
-from controllers.autobuy_controller import AutobuyController
+from controllers.autobuy_controller import AutoBuyController
 from services.discovery_service import DiscoveryService
 from repositories.token_repository import TokenRepository
 from utils.log_config import logger_manager, log_function
@@ -16,11 +17,13 @@ class DiscoveryController:
     def __init__(
         self,
         discovery_service: DiscoveryService | None = None,
-        autobuy_controller: AutobuyController | None = None,
-        token_repository: TokenRepository | None = None
+        autobuy_controller: AutoBuyController | None = None,
+        token_repository: TokenRepository | None = None,
+        db_path: str | None = None
     ) -> None:
+        self.db_path = db_path or os.getenv("DB_PATH", "./data/memecoins.db")
         self.discovery_service = discovery_service or DiscoveryService()
-        self.autobuy_controller = autobuy_controller or AutobuyController()
+        self.autobuy_controller = autobuy_controller or AutoBuyController(db_path=self.db_path)
         self.token_repository = token_repository or TokenRepository()
 
     @log_function

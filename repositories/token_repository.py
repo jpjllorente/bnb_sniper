@@ -12,7 +12,11 @@ from models.token import Token
 from utils.log_config import log_function
 from enums.token_status import TokenStatus
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "../../memecoins.db")
+# Usa DB_PATH del entorno si existe; si no, fallback a ./data/memecoins.db
+DB_PATH = os.getenv(
+    "DB_PATH",
+    os.path.join(os.path.dirname(__file__), "../../data/memecoins.db")
+)
 
 class TokenRepository:
     def __init__(self, db_path: str = DB_PATH):
@@ -25,23 +29,23 @@ class TokenRepository:
     def _ensure_table(self):
         conn = self._connect()
         conn.execute('''CREATE TABLE IF NOT EXISTS discovered_tokens (
-            pair_address   TEXT PRIMARY KEY,
-            name           TEXT,
-            symbol         TEXT,
-            address        TEXT,
-            price_native   REAL,
-            price_usd      REAL,
-            pair_created_at INTEGER,
-            liquidity      REAL,
-            volume         REAL,
-            buys           INTEGER,
-            image_url      TEXT,
-            open_graph     TEXT,
-            buy_tax        REAL DEFAULT 0.0,
-            sell_tax       REAL DEFAULT 0.0,
-            transfer_tax   REAL DEFAULT 0.0,
-            status         TEXT DEFAULT '',
-            timestamp      DATETIME DEFAULT CURRENT_TIMESTAMP
+            pair_address     TEXT PRIMARY KEY,
+            name             TEXT,
+            symbol           TEXT,
+            address          TEXT,
+            price_native     REAL,
+            price_usd        REAL,
+            pair_created_at  INTEGER,
+            liquidity        REAL,
+            volume           REAL,
+            buys             INTEGER,
+            image_url        TEXT,
+            open_graph       TEXT,
+            buy_tax          REAL DEFAULT 0.0,
+            sell_tax         REAL DEFAULT 0.0,
+            transfer_tax     REAL DEFAULT 0.0,
+            status           TEXT DEFAULT '',
+            timestamp        DATETIME DEFAULT CURRENT_TIMESTAMP
         )''')
         conn.commit()
         conn.close()
@@ -58,19 +62,34 @@ class TokenRepository:
     @log_function
     def save(self, token: Token) -> None:
         """
-        Inserta/actualiza un token descubierto. Añade campos si ya los tienes en tu modelo.
+        Inserta/actualiza un token descubierto.
+        NOTA: no incluimos 'timestamp' en el INSERT; deja que SQLite use su DEFAULT.
         """
         conn = self._connect()
-        conn.execute('''INSERT OR REPLACE INTO discovered_tokens 
-            (pair_address, name, symbol, address, price_native, price_usd, pair_created_at, liquidity, volume, buys, image_url, open_graph, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)''',
+        conn.execute(
+            '''
+            INSERT OR REPLACE INTO discovered_tokens (
+                pair_address,
+                name,
+                symbol,
+                address,
+                price_native,
+                price_usd,
+                pair_created_at,
+                liquidity,
+                volume,
+                buys,
+                image_url,
+                open_graph
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
             (
                 token.pair_address,
                 token.name,
                 token.symbol,
                 token.address,
                 float(token.price_native) if token.price_native is not None else None,
-                float(token.price_usd) if getattr(token, "price_usd", None) is not None else None,
+                float(getattr(token, "price_usd", None)) if getattr(token, "price_usd", None) is not None else None,
                 int(token.pair_created_at) if token.pair_created_at is not None else None,
                 float(token.liquidity) if token.liquidity is not None else None,
                 float(token.volume) if token.volume is not None else None,
@@ -85,9 +104,12 @@ class TokenRepository:
     @log_function
     def update_status(self, token: Token, status: TokenStatus) -> None:
         conn = self._connect()
-        conn.execute('''UPDATE discovered_tokens
-                           SET status = ?
-                         WHERE pair_address = ?''',
+        conn.execute(
+            '''
+            UPDATE discovered_tokens
+               SET status = ?
+             WHERE pair_address = ?
+            ''',
             (status.value, token.pair_address)
         )
         conn.commit()
@@ -99,11 +121,14 @@ class TokenRepository:
         Actualiza tasas almacenadas desde GoPlus (buy/sell/transfer).
         """
         conn = self._connect()
-        conn.execute('''UPDATE discovered_tokens SET
-            buy_tax = ?,
-            sell_tax = ?,
-            transfer_tax = ?
-            WHERE pair_address = ?''',
+        conn.execute(
+            '''
+            UPDATE discovered_tokens SET
+                buy_tax = ?,
+                sell_tax = ?,
+                transfer_tax = ?
+            WHERE pair_address = ?
+            ''',
             (
                 float(token.buy_tax or 0.0),
                 float(token.sell_tax or 0.0),
@@ -122,10 +147,10 @@ class TokenRepository:
         cur = conn.cursor()
         cur.execute("SELECT * FROM discovered_tokens WHERE pair_address = ?", (pair_address,))
         row = cur.fetchone()
+        cols = [d[0] for d in cur.description] if cur.description else []
         conn.close()
         if not row:
             return None
-        cols = [d[0] for d in cur.description]  # type: ignore[attr-defined]
         return {k: v for k, v in zip(cols, row)}
 
     @log_function

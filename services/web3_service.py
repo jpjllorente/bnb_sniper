@@ -17,7 +17,7 @@ WBNB_ADDRESS = os.getenv("WBNB_ADDRESS", "0xBB4CdB9CBd36B01bD1cBaEBF2De08d9173bc
 ROUTER_ADDRESS = os.getenv("ROUTER_ADDRESS", "0x10ED43C718714eb63d5aA57B78B54704E256024E")
 DEFAULT_SLIPPAGE = float(os.getenv("DEFAULT_SLIPPAGE", "3.0"))  # %
 DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
-GAS_PRICE_WEI = int(os.getenv("GAS_PRICE_WEI", "0"))
+GAS_PRICE_WEI = int(os.getenv("GAS_PRICE_WEI", "0"))  # opcional: fuerza gasPrice legacy
 
 class Web3Service:
     def __init__(self, rpc_url: str | None = None) -> None:
@@ -62,7 +62,7 @@ class Web3Service:
         amt_out = amounts[-1]
         return int(amt_out * (1 - (slippage / 100.0)))
 
-    # ---- tx build / gas / send ----
+    # ---- gas helpers ----
     def _legacy_gas_price(self) -> int | None:
         if GAS_PRICE_WEI > 0:
             return GAS_PRICE_WEI
@@ -71,6 +71,25 @@ class Web3Service:
         except Exception:
             return None
 
+    def _normalize_gas_fields(self, tx: dict) -> dict:
+        """
+        Evita mezclar legacy gasPrice con EIP-1559. Si el tx ya trae 1559, no añadimos gasPrice.
+        Si no trae 1559, usamos solo gasPrice y limpiamos campos 1559 si alguno existiera.
+        """
+        has_1559 = ("maxFeePerGas" in tx) or ("maxPriorityFeePerGas" in tx)
+        if has_1559:
+            # Asegúrate de NO tener gasPrice si te han inyectado 1559
+            tx.pop("gasPrice", None)
+        else:
+            gas_price = self._legacy_gas_price()
+            if gas_price:
+                tx["gasPrice"] = int(gas_price)
+            # Limpia cualquier resto de 1559 por si algún nodo lo coló
+            tx.pop("maxFeePerGas", None)
+            tx.pop("maxPriorityFeePerGas", None)
+        return tx
+
+    # ---- tx build / gas / send ----
     @log_function
     def build_swap_exact_eth_for_tokens(
         self, amount_in_wei: int, amount_out_min: int, token_address: str, deadline_secs_from_now: int = 60
@@ -80,6 +99,7 @@ class Web3Service:
             raise RuntimeError("No hay PRIVATE_KEY configurada para firmar.")
         router = self.load_router()
         path = [self._wbnb_addr, self.checksum(token_address)]
+        # 1) construir tx base (sin gas todavía)
         tx = router.functions.swapExactETHForTokens(
             int(amount_out_min), path, self._account.address, int(time()) + deadline_secs_from_now
         ).build_transaction({
@@ -88,11 +108,11 @@ class Web3Service:
             "nonce": self._w3.eth.get_transaction_count(self._account.address),
             "chainId": self._w3.eth.chain_id,
         })
-        gas_price = self._legacy_gas_price()
-        if gas_price:
-            tx["gasPrice"] = gas_price
-        estimated_gas = self._w3.eth.estimate_gas(tx)
-        tx["gas"] = int(estimated_gas * 1.20)  # colchón 20%
+        # 2) normalizar campos de gas (legacy vs 1559) ANTES de estimate_gas
+        tx = self._normalize_gas_fields(tx)
+        # 3) estimar y aplicar gas con colchón
+        estimated_gas = int(self._w3.eth.estimate_gas(tx))
+        tx["gas"] = int(estimated_gas * 1.20)
         return tx
 
     @log_function
@@ -128,10 +148,8 @@ class Web3Service:
             "nonce": self._w3.eth.get_transaction_count(self._account.address),
             "chainId": self._w3.eth.chain_id,
         })
-        gas_price = self._legacy_gas_price()
-        if gas_price:
-            tx["gasPrice"] = gas_price
-        estimated_gas = self._w3.eth.estimate_gas(tx)
+        tx = self._normalize_gas_fields(tx)
+        estimated_gas = int(self._w3.eth.estimate_gas(tx))
         tx["gas"] = int(estimated_gas * 1.20)
         return tx
 
@@ -159,10 +177,8 @@ class Web3Service:
             "nonce": self._w3.eth.get_transaction_count(self._account.address),
             "chainId": self._w3.eth.chain_id,
         })
-        gas_price = self._legacy_gas_price()
-        if gas_price:
-            tx["gasPrice"] = gas_price
-        estimated_gas = self._w3.eth.estimate_gas(tx)
+        tx = self._normalize_gas_fields(tx)
+        estimated_gas = int(self._w3.eth.estimate_gas(tx))
         tx["gas"] = int(estimated_gas * 1.20)
         return tx
 
@@ -170,12 +186,11 @@ class Web3Service:
     def get_amount_out_min_token_to_bnb(self, token_address: str, amount_in_tokens_raw: int, slippage_percent: float | None) -> int:
         slippage = DEFAULT_SLIPPAGE if slippage_percent is None else slippage_percent
         path = [self.checksum(token_address), self._wbnb_addr]
-        amounts = self.get_amounts_out(amount_in_wei=amount_in_tokens_raw, path=path)  # reutiliza get_amounts_out
+        amounts = self.get_amounts_out(amount_in_wei=amount_in_tokens_raw, path=path)
         amt_out = amounts[-1]
         return int(amt_out * (1 - (slippage / 100.0)))
     
-    # -- utilidades de recibos/tx (añádelas a Web3Service) --
-
+    # -- utilidades de recibos/tx --
     def wait_for_receipt(self, tx_hash: str | HexBytes, timeout: int = 180) -> TxReceipt:
         return self._w3.eth.wait_for_transaction_receipt(tx_hash, timeout=timeout)
 
@@ -186,17 +201,11 @@ class Web3Service:
         return float(wei) / 1e18
 
     def token_balance_raw(self, token_address: str, wallet_address: Optional[str] = None) -> int:
-        """
-        Devuelve el balance raw (sin normalizar por decimals) del token en la wallet.
-        """
         erc20 = self.load_erc20(token_address)
         wallet = self.checksum(wallet_address or os.getenv("WALLET_ADDRESS"))
         return int(erc20.functions.balanceOf(wallet).call())
 
     def token_balance_tokens(self, token_address: str, wallet_address: Optional[str] = None) -> float:
-        """
-        Devuelve el balance normalizado (en unidades token) del token en la wallet.
-        """
         raw = self.token_balance_raw(token_address, wallet_address)
         erc20 = self.load_erc20(token_address)
         decimals = self.get_token_decimals(erc20)

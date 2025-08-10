@@ -1,6 +1,7 @@
 # controllers/autobuy_controller.py
 from __future__ import annotations
-import os, time
+import os
+import time
 from typing import Optional
 from web3 import Web3
 
@@ -8,14 +9,21 @@ from services.web3_service import Web3Service
 from repositories.history_repository import HistoryRepository
 from repositories.monitor_repository import MonitorRepository
 from repositories.action_repository import ActionRepository
+from repositories.meta_repository import MetaRepository  # para el fusible de primera compra
 from utils.log_config import logger_manager, log_function
 
 logger = logger_manager.setup_logger(__name__)
 
-# Todo en BNB
+# ----------------- Config vía entorno -----------------
 PNL_THRESHOLD_PERCENT = float(os.getenv("PNL_THRESHOLD_PERCENT", "2.0"))
 MAX_FEE_BNB = float(os.getenv("MAX_FEE_BNB", "0.02"))
 WBNB_ADDRESS = os.getenv("WBNB_ADDRESS")
+
+# Fusible y cap de gasto para la primera prueba real
+FIRST_REAL_BUY = os.getenv("FIRST_REAL_BUY", "false").lower() == "true"
+TEST_MAX_SPEND_BNB = float(os.getenv("TEST_MAX_SPEND_BNB", "0.001"))
+DRY_RUN = os.getenv("DRY_RUN", "true").lower() == "true"
+
 
 class AutoBuyController:
     """
@@ -25,12 +33,35 @@ class AutoBuyController:
       confirm_pending_buy / cancel_pending_buy -> el monitor llama tras decisión del usuario
       record_buy_receipt -> con datos reales de compra
       finalize_sell -> cierra el ciclo con venta + pnl + bnb_amount
+
+    Compatibilidad:
+      - DiscoveryController puede llamar a procesar_token(token) y aquí delega a propose_buy con cap de gasto.
     """
+
     def __init__(self, db_path: str) -> None:
         self.w3s = Web3Service()
-        self.history_repo = HistoryRepository(db_path=db_path)
-        self.monitor_repo = MonitorRepository(db_path=db_path)
-        self.action_repo  = ActionRepository(db_path=db_path)
+        self.db_path = db_path or os.getenv("DB_PATH", "./data/memecoins.db")
+        self.history_repo = HistoryRepository(db_path=self.db_path)
+        self.monitor_repo = MonitorRepository(db_path=self.db_path)
+        self.action_repo = ActionRepository(db_path=self.db_path)
+        self.meta = MetaRepository(db_path=self.db_path)
+
+    # ---------------- helpers fusible/cap ----------------
+    def _first_buy_already_done(self) -> bool:
+        return self.meta.get("first_buy_done", "0") == "1"
+
+    def _apply_test_cap_wei(self, amount_bnb_wei: int) -> int:
+        try:
+            cap_wei = Web3.to_wei(TEST_MAX_SPEND_BNB, "ether")
+        except Exception:
+            cap_wei = Web3.to_wei(0.001, "ether")
+        if amount_bnb_wei > cap_wei:
+            logger.info(
+                f"[autobuy] Cap de prueba activo. Ajuste de "
+                f"{self.w3s.wei_to_bnb(amount_bnb_wei)} BNB → {self.w3s.wei_to_bnb(cap_wei)} BNB"
+            )
+            return cap_wei
+        return amount_bnb_wei
 
     # ---------------- utilidades en BNB ----------------
     def _estimate_fee_bnb(self, gas_used: int, gas_price_wei: int) -> float:
@@ -42,6 +73,10 @@ class AutoBuyController:
         return ((expected_unit_cost_bnb - current_price_bnb) / denom) * 100.0
 
     def _preview_amount_out_min(self, token_address: str, amount_bnb_wei: int) -> int:
+        if not WBNB_ADDRESS:
+            # Falla controlada si falta la variable
+            logger.error("WBNB_ADDRESS no configurada en entorno.")
+            return 0
         path = [WBNB_ADDRESS, token_address]
         return self.w3s.get_amount_out_min(amount_bnb_wei, path, None)
 
@@ -63,9 +98,17 @@ class AutoBuyController:
         amount_bnb_wei: int,
         price_native_bnb: float,              # unitario al iniciar compra (de DexScreener)
         current_price_bnb: float,             # unitario actual (para PnL esperado)
-        buy_fee_bnb_per_unit: float = 0.0,    # de GoPlus vía token_repository
+        buy_fee_bnb_per_unit: float = 0.0,    # de GoPlus u otras fuentes
         transfer_fee_bnb_per_unit: float = 0.0
     ) -> dict:
+        # Fusible de primera compra: si activo y ya se hizo una compra real, bloquea
+        if FIRST_REAL_BUY and self._first_buy_already_done():
+            logger.info("[autobuy] Fusible activo: primera compra ya realizada. Bloqueando nuevas compras.")
+            return {"ok": False, "reason": "FIRST_BUY_FUSE_BLOCKED"}
+
+        # Cap de gasto para la prueba
+        amount_bnb_wei = self._apply_test_cap_wei(amount_bnb_wei)
+
         # 1) amountOutMin y salida esperada (para prorratear gas)
         amount_out_min = self._preview_amount_out_min(token_address, amount_bnb_wei)
         if not amount_out_min or amount_out_min <= 0:
@@ -80,14 +123,15 @@ class AutoBuyController:
         fee_bnb_total = self._estimate_fee_bnb(tx.get("gas", 0), tx.get("gasPrice", 0) or 0)
 
         gas_bnb_per_unit = fee_bnb_total / max(expected_out_tokens, 1e-18)
-        expected_unit_cost_bnb = price_native_bnb + buy_fee_bnb_per_unit + transfer_fee_bnb_per_unit + gas_bnb_per_unit
+        expected_unit_cost_bnb = (
+            price_native_bnb + buy_fee_bnb_per_unit + transfer_fee_bnb_per_unit + gas_bnb_per_unit
+        )
 
         pnl_percent = self._compute_pnl_percent(expected_unit_cost_bnb, current_price_bnb)
 
         # 3) reglas de negocio -> acciones pendientes si fuera de umbral o fee demasiado alta
         if pnl_percent < PNL_THRESHOLD_PERCENT or fee_bnb_total > MAX_FEE_BNB:
             self.action_repo.registrar_accion(pair_address=pair_address, tipo="BUY")
-            # El monitor vigilará estado: 'pendiente' -> 'aprobada'/'cancelada'
             reason = "PNL_BELOW_THRESHOLD" if pnl_percent < PNL_THRESHOLD_PERCENT else "FEE_HIGH"
             return {
                 "ok": True,
@@ -161,9 +205,17 @@ class AutoBuyController:
         Llamar cuando el monitor detecta 'aprobada' en ActionRepository para este par.
         Recalculo amounts/gas y procedo a iniciar compra.
         """
+        # Fusible de primera compra
+        if FIRST_REAL_BUY and self._first_buy_already_done():
+            logger.info("[autobuy] Fusible activo en confirm_pending_buy: primera compra ya realizada.")
+            return {"ok": False, "reason": "FIRST_BUY_FUSE_BLOCKED"}
+
         estado = self.action_repo.obtener_estado(pair_address)
         if estado != "aprobada":
             return {"ok": False, "reason": f"acción no aprobada (estado={estado})"}
+
+        # Cap de gasto
+        amount_bnb_wei = self._apply_test_cap_wei(amount_bnb_wei)
 
         amount_out_min = self._preview_amount_out_min(token_address, amount_bnb_wei)
         if not amount_out_min or amount_out_min <= 0:
@@ -175,7 +227,7 @@ class AutoBuyController:
         gas_bnb_per_unit = fee_bnb_total / max(expected_out_tokens, 1e-18)
         buy_price_with_fees_bnb = price_native_bnb + buy_fee_bnb_per_unit + transfer_fee_bnb_per_unit + gas_bnb_per_unit
 
-        # iniciamos compra
+        # iniciar compra
         result = self._start_buy_immediate(
             pair_address, token_address, symbol, name,
             amount_bnb_wei, amount_out_min, tx,
@@ -240,12 +292,14 @@ class AutoBuyController:
 
         self.monitor_repo.clear_history_id(pair_address)
         return {"ok": True, "history_id": history_id, "pnl": pnl_percent, "bnb_amount": bnb_amount}
-    
+
     @log_function
     def await_and_record_buy_receipt(self, pair_address: str, token_address: str, token_decimals: int, tx_hash: str) -> dict:
         """
         Espera el receipt de la compra, parsea cuántos tokens se recibieron realmente,
         calcula el precio real unitario (incluyendo gas) y lo persiste en history.
+        Si el fusible está activo y es la primera compra real exitosa (no DRY_RUN),
+        marca 'first_buy_done' para bloquear siguientes.
         """
         receipt = self.w3s.wait_for_receipt(tx_hash)
         tx = self.w3s.get_transaction(tx_hash)
@@ -256,10 +310,12 @@ class AutoBuyController:
         amount_received_tokens = None
 
         for log in receipt["logs"]:
-            # buscamos Transfer del token hacia nuestra wallet
-            if log["address"].lower() == token_addr_cs.lower() and log["topics"][0].hex() == TRANSFER_TOPIC:
+            # topic0 puede venir bytes/HexBytes/str; normalizamos a hex
+            topic0 = log["topics"][0].hex() if hasattr(log["topics"][0], "hex") else (log["topics"][0] if isinstance(log["topics"][0], str) else None)
+            if log["address"].lower() == token_addr_cs.lower() and topic0 == TRANSFER_TOPIC:
                 # topics[2] = 'to'
-                to_addr = Web3.to_checksum_address("0x" + log["topics"][2][-40:])
+                to_hex = log["topics"][2].hex() if hasattr(log["topics"][2], "hex") else str(log["topics"][2])
+                to_addr = Web3.to_checksum_address("0x" + to_hex[-40:])
                 if to_addr == wallet:
                     raw = int(log["data"], 16)
                     amount_received_tokens = raw / (10 ** token_decimals)
@@ -279,6 +335,12 @@ class AutoBuyController:
             return {"ok": False, "reason": "history_id no encontrado en monitor"}
 
         self.history_repo.set_buy_final_result(history_id, buy_real_price_bnb, amount_received_tokens)
+
+        # Marcar fusible como usado SOLO si no es DRY_RUN y el flag está habilitado
+        if FIRST_REAL_BUY and not DRY_RUN:
+            logger.info("[autobuy] Marcando 'first_buy_done' tras receipt OK (no DRY_RUN).")
+            self.meta.set("first_buy_done", "1")
+
         return {
             "ok": True,
             "history_id": history_id,
@@ -286,3 +348,44 @@ class AutoBuyController:
             "buy_amount_tokens": amount_received_tokens,
             "gas_used": gas_used
         }
+
+    # ==========================================
+    # Compatibilidad con DiscoveryController
+    # ==========================================
+    @log_function
+    def procesar_token(self, token) -> dict:
+        """
+        Compatibilidad con DiscoveryController: procesa un token descubierto y decide si propone compra.
+        Limita el gasto a TEST_MAX_SPEND_BNB (por defecto 0.001 BNB).
+        """
+        # Si el fusible está activo y ya se hizo la primera compra, bloquea
+        if FIRST_REAL_BUY and self._first_buy_already_done():
+            logger.info("[autobuy] Fusible activo en procesar_token: primera compra ya realizada.")
+            return {"ok": False, "reason": "FIRST_BUY_FUSE_BLOCKED"}
+
+        # Cap de gasto (convierte a wei)
+        try:
+            amount_bnb_wei = Web3.to_wei(TEST_MAX_SPEND_BNB, "ether")
+        except Exception:
+            amount_bnb_wei = Web3.to_wei(0.001, "ether")
+        amount_bnb_wei = self._apply_test_cap_wei(amount_bnb_wei)
+
+        # Precio nativo actual como referencia
+        price_native_bnb = float(getattr(token, "price_native", 0.0) or 0.0)
+        current_price_bnb = price_native_bnb
+
+        # Taxes por unidad en BNB (si los tuvieses en repositorio de tasas por unidad, intégralos aquí)
+        buy_fee_bnb_per_unit = 0.0
+        transfer_fee_bnb_per_unit = 0.0
+
+        return self.propose_buy(
+            pair_address=getattr(token, "pair_address"),
+            token_address=getattr(token, "address"),
+            symbol=getattr(token, "symbol", None),
+            name=getattr(token, "name", None),
+            amount_bnb_wei=amount_bnb_wei,
+            price_native_bnb=price_native_bnb,
+            current_price_bnb=current_price_bnb,
+            buy_fee_bnb_per_unit=buy_fee_bnb_per_unit,
+            transfer_fee_bnb_per_unit=transfer_fee_bnb_per_unit,
+        )
