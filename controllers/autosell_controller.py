@@ -176,3 +176,47 @@ class AutoSellController:
             "bnb_amount": bnb_amount,
             "gas_used": gas_used
         }
+        
+    @log_function
+    def send_sell_and_measure(self,
+                            token_address: str,
+                            sell_amount_tokens: float,
+                            sell_tx: dict) -> dict:
+        """
+        Envía la venta, espera receipt y devuelve métricas REALES de esta venta parcial:
+        - bnb_bruto_recibido (incluye gas añadido para simetría con la compra)
+        - sell_real_price_bnb (bnb_bruto_recibido / sell_amount_tokens)
+        - tx_hash
+        NO escribe en history (lo hará el orquestador cuando termine el 100%).
+        """
+        # 1) balance BNB antes
+        pre_wei = self.w3s.wei_balance()
+
+        # 2) enviar
+        tx_hash = self.w3s.sign_and_send(sell_tx)
+
+        # 3) receipt + gas
+        receipt = self.w3s.wait_for_receipt(tx_hash)
+        tx = self.w3s.get_transaction(tx_hash)
+        gas_used = int(receipt["gasUsed"])
+        gas_price = int(tx.get("gasPrice") or 0)
+        gas_cost_wei = gas_used * gas_price
+
+        # 4) balance BNB después
+        post_wei = self.w3s.wei_balance()
+
+        # 5) delta y bruto
+        delta_net_wei = post_wei - pre_wei
+        bnb_net = self.w3s.wei_to_bnb(delta_net_wei)
+        bnb_gas = self.w3s.wei_to_bnb(gas_cost_wei)
+        bnb_bruto_recibido = bnb_net + bnb_gas
+
+        sell_real_price_bnb = bnb_bruto_recibido / max(sell_amount_tokens, 1e-18)
+
+        return {
+            "ok": True,
+            "tx_hash": tx_hash,
+            "bnb_bruto_recibido": bnb_bruto_recibido,
+            "sell_real_price_bnb": sell_real_price_bnb,
+            "gas_used": gas_used
+        }
