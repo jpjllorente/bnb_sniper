@@ -1,6 +1,6 @@
 from __future__ import annotations
 import os
-from typing import Any, List
+from typing import Any, List, Optional
 from web3 import Web3
 from web3.middleware import ExtraDataToPOAMiddleware
 from web3.types import TxReceipt, HexBytes
@@ -184,3 +184,20 @@ class Web3Service:
 
     def wei_to_bnb(self, wei: int | float) -> float:
         return float(wei) / 1e18
+
+    def token_balance_raw(self, token_address: str, wallet_address: Optional[str] = None) -> int:
+        """
+        Devuelve el balance raw (sin normalizar por decimals) del token en la wallet.
+        """
+        erc20 = self.load_erc20(token_address)
+        wallet = self.checksum(wallet_address or os.getenv("WALLET_ADDRESS"))
+        return int(erc20.functions.balanceOf(wallet).call())
+
+    def token_balance_tokens(self, token_address: str, wallet_address: Optional[str] = None) -> float:
+        """
+        Devuelve el balance normalizado (en unidades token) del token en la wallet.
+        """
+        raw = self.token_balance_raw(token_address, wallet_address)
+        erc20 = self.load_erc20(token_address)
+        decimals = self.get_token_decimals(erc20)
+        return raw / (10 ** decimals)
