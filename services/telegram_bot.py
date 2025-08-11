@@ -1,10 +1,9 @@
 import os
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from utils.log_config import logger_manager, log_function
 from repositories.action_repository import ActionRepository
 from repositories.monitor_repository import MonitorRepository
-
 
 logger = logger_manager.setup_logger(__name__)
 
@@ -21,16 +20,17 @@ class TelegramBot:
         self.monitor = MonitorRepository(os.getenv("DB_PATH"))
 
         self.application = Application.builder().token(self.token).build()
+
         self.application.add_handler(CommandHandler("start", self.cmd_start))
         self.application.add_handler(CommandHandler("acciones", self.cmd_acciones))
         self.application.add_handler(CommandHandler("autorizar", self.cmd_autorizar))
         self.application.add_handler(CommandHandler("cancelar", self.cmd_cancelar))
+        self.application.add_handler(CallbackQueryHandler(self.cb_action, pattern=r'^(autorizar|cancelar):'))
 
-        interval = int(os.getenv("ACTIONS_PUSH_INTERVAL", "10"))
+        # Push periódico
+        interval = int(os.getenv("TELEGRAM_PUSH_INTERVAL", "15"))
         if interval > 0:
-            self.application.job_queue.run_repeating(
-                self._push_pending_actions, interval=interval, first=3, name="push_acciones"
-            )
+            self.application.job_queue.run_repeating(self._push_pending_actions, interval=interval, first=3, name="push_acciones")
 
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Bot listo. Usa /acciones para ver pendientes.")
@@ -49,7 +49,6 @@ class TelegramBot:
                 f"  Motivo: {_esc(motivo)}\n"
                 f"  BscScan: {token_url}"
             )
-        lines.append("\nUsa: /autorizar <pair>  |  /cancelar <pair>")
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
     async def cmd_autorizar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -58,12 +57,7 @@ class TelegramBot:
             return
         pair = context.args[0]
         self.actions.autorizar_accion(pair)
-        await update.message.reply_text(f"✅ Aprobada: `{pair}`\nSe envía al pipeline.", parse_mode="Markdown")
-        if (os.getenv("DRY_RUN", "").lower() in ("true","1","yes")):
-            await update.message.reply_text(
-                f"🧪 DRY-RUN: simulación de *orden de compra* para `{pair}` enviada.",
-                parse_mode="Markdown"
-            )
+        await update.message.reply_text(f"✅ Autorizada: `{pair}`", parse_mode="Markdown")
 
     async def cmd_cancelar(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not context.args:
@@ -72,6 +66,19 @@ class TelegramBot:
         pair = context.args[0]
         self.actions.cancelar_accion(pair)
         await update.message.reply_text(f"🛑 Cancelada: `{pair}`", parse_mode="Markdown")
+
+    async def cb_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        await query.answer()
+        data = query.data or ""
+        if data.startswith("autorizar:"):
+            pair = data.split(":",1)[1]
+            self.actions.autorizar_accion(pair)
+            await query.edit_message_text(f"✅ Autorizada: `{pair}`", parse_mode="Markdown")
+        elif data.startswith("cancelar:"):
+            pair = data.split(":",1)[1]
+            self.actions.cancelar_accion(pair)
+            await query.edit_message_text(f"🛑 Cancelada: `{pair}`", parse_mode="Markdown")
 
     async def _push_pending_actions(self, context: ContextTypes.DEFAULT_TYPE):
         chat_id = os.getenv("TELEGRAM_CHAT_ID")
@@ -88,16 +95,24 @@ class TelegramBot:
                     f"*Pair:* `{r['pair_address']}`\n"
                     f"*Tipo:* {r['tipo']}\n"
                     f"*Motivo:* {_esc(motivo)}\n"
-                    f"*BscScan:* {token_url}\n\n"
-                    f"*Comandos:*\n"
-                    f"/autorizar {r['pair_address']}\n"
-                    f"/cancelar {r['pair_address']}"
+                    f"*BscScan:* {token_url}"
                 )
-                await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode="Markdown")
+                kb = InlineKeyboardMarkup([[ 
+                    InlineKeyboardButton("✅ Autorizar", callback_data=f"autorizar:{r['pair_address']}"),
+                    InlineKeyboardButton("🛑 Rechazar",  callback_data=f"cancelar:{r['pair_address']}")
+                ]])
+                await context.bot.send_message(chat_id=int(chat_id), text=msg, parse_mode="Markdown", reply_markup=kb)
                 self.actions.marcar_notificado(r["pair_address"])
         except Exception as e:
             logger.exception(f"[push_pending_actions] error: {e}")
 
     def run(self):
         logger.info("TelegramBot iniciando...")
-        self.application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # main.py crea el loop en el hilo del bot; no instales signal handlers aquí
+        self.application.run_polling(stop_signals=None, close_loop=False)
+
+    def stop_running(self):
+        try:
+            self.application.stop()
+        except Exception:
+            pass

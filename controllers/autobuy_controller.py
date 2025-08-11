@@ -131,8 +131,13 @@ class AutoBuyController:
 
         # 3) reglas de negocio -> acciones pendientes si fuera de umbral o fee demasiado alta
         if pnl_percent < PNL_THRESHOLD_PERCENT or fee_bnb_total > MAX_FEE_BNB:
-            self.action_repo.registrar_accion(pair_address=pair_address, tipo="BUY")
             reason = "PNL_BELOW_THRESHOLD" if pnl_percent < PNL_THRESHOLD_PERCENT else "FEE_HIGH"
+            self.action_repo.registrar_accion(
+                pair_address=pair_address,
+                tipo="compra",
+                token_address=token_address,
+                motivo=reason
+            )
             return {
                 "ok": True,
                 "mode": "PENDING_USER",

@@ -11,60 +11,84 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 API_BASE = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}" if TELEGRAM_TOKEN else None
 
 def _esc(s: str) -> str:
+    # escapado mínimo para Markdown
     return (s or "").replace("\\", "\\\\").replace("_", "\\_").replace("*", "\\*").replace("`", "\\`").replace("[","\\[").replace("]","\\]")
 
 class TelegramService:
-    def __init__(self):
-        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            raise RuntimeError("Faltan TELEGRAM_TOKEN o TELEGRAM_CHAT_ID")
-        self.chat_id = TELEGRAM_CHAT_ID
-        self.actions = ActionRepository(os.getenv("DB_PATH"))
+    def __init__(self, token: str | None = None, chat_id: str | None = None,
+                 actions: ActionRepository | None = None) -> None:
+        self.token = token or TELEGRAM_TOKEN
+        self.chat_id = int(chat_id or TELEGRAM_CHAT_ID) if (chat_id or TELEGRAM_CHAT_ID) else None
+        self.actions = actions or ActionRepository()
+        if not self.token or not self.chat_id:
+            logger.warning("TelegramService sin TOKEN o CHAT_ID; se desactivan envíos.")
 
-    def _send_md(self, text: str):
+    def _send(self, text: str, reply_markup: dict | None = None) -> None:
+        if not API_BASE or not self.chat_id:
+            return
+        payload = {"chat_id": self.chat_id, "text": text, "parse_mode": "Markdown"}
+        if reply_markup:
+            payload["reply_markup"] = reply_markup
         try:
-            r = requests.post(f"{API_BASE}/sendMessage", json={
-                "chat_id": self.chat_id, "text": text, "parse_mode": "Markdown"
-            }, timeout=10)
-            r.raise_for_status()
+            requests.post(f"{API_BASE}/sendMessage", json=payload, timeout=10).raise_for_status()
         except Exception as e:
-            logger.error(f"❌ Error Telegram: {e}")
+            logger.error(f"❌ Error enviando Telegram: {e}")
 
     @log_function
-    def solicitar_accion(self, tipo: str, token: Token, contexto: str) -> None:
+    def solicitar_autorizacion(self, token: Token, tipo: str = "compra", contexto: str | None = None) -> None:
         """
-        Llamar SOLO cuando el token NO pasa tus parámetros normales.
-        Guarda en DB el motivo y la token_address para que el push lo muestre.
+        Enviar solicitud de autorización SOLO cuando no pasan filtros
+        o cuando el módulo de compra devuelve PENDING_USER (pnl/fees).
         """
         pair = token.pair_address
         token_addr = getattr(token, "address", None) or getattr(token, "token_address", None)
-        symbol = getattr(token, "symbol", "") or "N/D"
-        price_txt = f"{float(token.price_native):.8f}" if getattr(token, "price_native", None) is not None else "N/D"
+        symbol = (getattr(token, "symbol", "") or "N/D").strip()
+        name = (getattr(token, "name", "") or "").strip()
+        price_txt = f"{float(getattr(token, 'price_native', 0.0) or 0.0):.8f}"
         motivo_txt = (contexto or "").strip() or "Sin detalle."
-        tipo_up = (tipo or "BUY").upper()
-
+        tipo_norm = "compra" if str(tipo).lower() in ("buy","compra") else "venta"
         token_url = f"https://bscscan.com/token/{token_addr}" if token_addr else "N/D"
 
         msg = (
-            f"📢 *Confirmación requerida: {tipo_up}*\n\n"
-            f"*Token:* {_esc(symbol)}\n"
+            f"📢 *Confirmación requerida: {tipo_norm.upper()}*\n\n"
+            f"*Token:* {_esc(name)} ({_esc(symbol)})\n"
             f"*Token URL:* {token_url}\n"
             f"*Pair:* `{pair}`\n"
             f"*Precio actual:* {price_txt} BNB\n\n"
-            f"*Motivo:*\n{_esc(motivo_txt)}\n\n"
-            f"*Responde:*\n`/autorizar {pair}`\n`/cancelar {pair}`"
+            f"*Motivo:* {_esc(motivo_txt)}"
         )
-        try:
-            r = requests.post(f"{API_BASE}/sendMessage", json={
-                "chat_id": self.chat_id, "text": msg, "parse_mode": "Markdown"
-            }, timeout=10)
-            r.raise_for_status()
-            # ⬇️ Queda persistido con motivo + token_address (para el push automático)
-            self.actions.registrar_accion(pair, tipo_up, token_address=token_addr, motivo=motivo_txt)
-        except Exception as e:
-            logger.error(f"❌ Error al enviar solicitud de {tipo_up}: {e}")
+        kb = {
+            "inline_keyboard": [[
+                {"text": "✅ Autorizar", "callback_data": f"autorizar:{pair}"},
+                {"text": "🛑 Rechazar",  "callback_data": f"cancelar:{pair}"}
+            ]]
+        }
+        self._send(msg, reply_markup=kb)
+        # Persistir acto pendiente
+        self.actions.registrar_accion(pair, tipo_norm, token_address=token_addr, motivo=motivo_txt)
 
     @log_function
-    def notificar_info(self, mensaje: str): self._send_md(f"ℹ️ {mensaje}")
+    def notificar_autorizado_info(self, token: Token) -> None:
+        """Mensaje informativo para tokens que pasaron filtros (SIN botones)."""
+        pair = token.pair_address
+        token_addr = getattr(token, "address", None) or getattr(token, "token_address", None)
+        symbol = (getattr(token, "symbol", "") or "N/D").strip()
+        name = (getattr(token, "name", "") or "").strip()
+        price_txt = f"{float(getattr(token, 'price_native', 0.0) or 0.0):.8f}"
+        token_url = f"https://bscscan.com/token/{token_addr}" if token_addr else "N/D"
+        msg = (
+            f"✅ *Autorizado por filtros*\n\n"
+            f"*Token:* {_esc(name)} ({_esc(symbol)})\n"
+            f"*Token URL:* {token_url}\n"
+            f"*Pair:* `{pair}`\n"
+            f"*Precio actual:* {price_txt} BNB"
+        )
+        self._send(msg)
 
     @log_function
-    def notificar_error(self, mensaje: str): self._send_md(f"🚨 *ERROR*: {mensaje}")
+    def notificar_info(self, mensaje: str): 
+        self._send(f"ℹ️ {mensaje}")
+
+    @log_function
+    def notificar_error(self, mensaje: str): 
+        self._send(f"🚨 *ERROR*: {mensaje}")

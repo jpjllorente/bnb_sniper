@@ -1,58 +1,80 @@
 # services/goplus_service.py
 from __future__ import annotations
-from goplus.token import Token as GoplusToken
-from models.token import Token
-from repositories.token_repository import TokenRepository
-from utils.log_config import logger_manager, log_function
+import os
+from goplus.token import Token as GoPlusToken
+from utils.logger import logger_manager, log_function
 
 logger = logger_manager.setup_logger(__name__)
 
 class GoplusService:
-    def __init__(
-        self,
-        goplus_token: GoplusToken | None = None,
-        token_repository: TokenRepository | None = None
-    ) -> None:
-        self.goplus_token = goplus_token or GoplusToken()
-        self.token_repository = token_repository or TokenRepository()
+    """
+    Servicio para consultar datos de seguridad de tokens usando el SDK oficial de GoPlus.
+    Guarda tasas en repositorio y devuelve si es honeypot o no.
+    """
+
+    def __init__(self, repo, access_token: str | None = None):
+        self.repo = repo
+        self.access_token = access_token or os.getenv("GOPLUS_ACCESS_TOKEN") or None
+        self.client = GoPlusToken(access_token=self.access_token)
 
     @log_function
-    def get_token_data(self, token: Token) -> dict:
-        """Devuelve el dict de seguridad de GoPlus para el token."""
+    def get_token_data(self, token) -> dict:
+        """
+        Llama a la API de GoPlus y devuelve el nodo de datos del token como dict.
+        """
         try:
-            data = self.goplus_token.token_security(chain_id=56, addresses=[token.address])
-            # Estructura típica: {"result": { "<addr_lower>": {...} } }
-            return data.json().get("result", {}).get(token.address.lower(), {}) or {}
+            resp = self.client.token_security(
+                chain_id="56",  # BSC mainnet
+                addresses=[token.address],
+                **{"_request_timeout": 10}
+            )
         except Exception as e:
             logger.error(f"GoPlus error get_token_data({token.symbol}): {e}")
             return {}
 
-    @log_function
-    def _is_honeypot(self, token: Token) -> bool:
-        """
-        True  => si la API devuelve exactamente "1"
-        False => "0", None, "unknown", o errores
-        """
         try:
-            data = self.get_token_data(token)
-            flag = data.get("is_honeypot")
-            return str(flag) == "1"
+            if not hasattr(resp, "result") or not isinstance(resp.result, dict):
+                logger.error(f"Respuesta inesperada de GoPlus para {token.symbol}: {resp}")
+                return {}
+
+            token_addr_lower = token.address.lower()
+            if token_addr_lower in resp.result:
+                return resp.result[token_addr_lower]
+
+            for k, v in resp.result.items():
+                if k.lower() == token_addr_lower:
+                    return v
+
+            logger.warning(f"No se encontró nodo de datos para {token.symbol} ({token.address})")
+            return {}
         except Exception as e:
-            logger.error(f"GoPlus error _is_honeypot({token.symbol}): {e}")
+            logger.error(f"GoPlus parse error ({token.symbol}): {e}")
+            return {}
+
+    @log_function
+    def update_token_and_get_honeypot(self, token) -> bool:
+        """
+        Obtiene datos de GoPlus, guarda tasas en repo y devuelve si es honeypot.
+        """
+        data = self.get_token_data(token)
+        if not data:
             return False
 
-    @log_function
-    def _save_token_taxes(self, token: Token) -> None:
-        data = self.get_token_data(token)
         try:
-            token.buy_tax = float(data.get("buy_tax", 0.0) or 0.0)
-            token.sell_tax = float(data.get("sell_tax", 0.0) or 0.0)
-            token.transfer_tax = float(data.get("transfer_tax", 0.0) or 0.0)
-            self.token_repository.update_taxes(token)
-        except Exception as e:
-            logger.error(f"Error updating taxes for {token.symbol}: {e}")
+            is_hp = bool(data.get("is_honeypot") or data.get("honeypot_result") or False)
+            buy_tax = float(data.get("buy_tax", 0))
+            sell_tax = float(data.get("sell_tax", 0))
+            transfer_tax = float(data.get("transfer_tax", 0))
 
-    @log_function
-    def update_token_and_get_honeypot(self, token: Token) -> bool:
-        self._save_token_taxes(token)
-        return self._is_honeypot(token)
+            self.repo.save_taxes(
+                pair_address=token.pair_address,
+                buy_tax=buy_tax,
+                sell_tax=sell_tax,
+                transfer_tax=transfer_tax,
+                is_honeypot=is_hp
+            )
+
+            return is_hp
+        except Exception as e:
+            logger.error(f"GoPlus save_taxes error ({token.symbol}): {e}")
+            return False
